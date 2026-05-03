@@ -41,7 +41,9 @@ defmodule SymphonyElixir.MixProject do
       ],
       test_ignore_filters: [
         "test/support/snapshot_support.exs",
-        "test/support/test_support.exs"
+        "test/support/test_support.exs",
+        "test/support/git_fixture.exs",
+        "test/support/github_forge_stub.exs"
       ],
       dialyzer: [
         plt_add_apps: [:mix]
