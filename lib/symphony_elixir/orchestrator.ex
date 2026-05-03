@@ -599,7 +599,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp stacking_snapshot do
     %{
       blockers_by_id: %{},
-      branch_exists?: fn _handle, _branch -> true end
+      branch_exists?: &SymphonyElixir.Branches.Reconciler.branch_exists?/2
     }
   end
 
