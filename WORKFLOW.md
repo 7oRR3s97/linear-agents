@@ -232,6 +232,9 @@ Use this only when completion is blocked by missing required tools or missing au
 7.  Before every `git push` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8.  Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
     - Ensure the GitHub PR has label `linear-agent` (add it if missing).
+    - PR title pattern: must START with `[<linear_issue>]` (the Linear identifier in brackets, e.g. `[PES-137]`), followed by the conventional commit summary. Do not put the identifier at the end of the title.
+      - Correct: `[PES-137] feat(agent): wire Claude Code subprocess into AgentRunner`
+      - Incorrect: `feat(agent): wire Claude Code subprocess into AgentRunner [PES-137]`
 9.  Merge latest `origin/main` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
