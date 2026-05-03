@@ -15,15 +15,29 @@ defmodule SymphonyElixir.PromptBuilder do
       |> parse_template!()
 
     template
-    |> Solid.render!(
-      %{
-        "attempt" => Keyword.get(opts, :attempt),
-        "issue" => issue |> Map.from_struct() |> to_solid_map()
-      },
-      @render_opts
-    )
+    |> Solid.render!(render_vars(issue, opts), @render_opts)
     |> IO.iodata_to_binary()
   end
+
+  defp render_vars(issue, opts) do
+    %{
+      "attempt" => Keyword.get(opts, :attempt),
+      "issue" => issue |> Map.from_struct() |> to_solid_map(),
+      "repo" => Keyword.get(opts, :repo, ""),
+      "base_branch" => Keyword.get(opts, :base_branch, ""),
+      "pr_base_branch" => Keyword.get(opts, :pr_base_branch, ""),
+      "blocker_branches" => normalize_branch_list(Keyword.get(opts, :blocker_branches, [])),
+      "integration_conflict" => to_solid_value(Keyword.get(opts, :integration_conflict))
+    }
+  end
+
+  defp normalize_branch_list(branches) when is_list(branches) do
+    branches
+    |> Enum.filter(&is_binary/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_branch_list(_), do: []
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
 
