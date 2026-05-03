@@ -130,9 +130,24 @@ defmodule SymphonyElixir.Config do
         {:error, :missing_linear_project_slug}
 
       true ->
+        validate_runtime(settings)
+    end
+  end
+
+  defp validate_runtime(%{agent: %{runtime: "claude_code"}, claude_code: claude_code}) do
+    cond do
+      not is_binary(claude_code.command) or claude_code.command == "" ->
+        {:error, :missing_claude_code_command}
+
+      System.find_executable(claude_code.command) == nil ->
+        {:error, {:claude_code_cli_missing, claude_code.command}}
+
+      true ->
         :ok
     end
   end
+
+  defp validate_runtime(_settings), do: :ok
 
   defp validate_stacking(%{stacking: %{enabled: true}} = settings) do
     with :ok <- validate_repositories(settings),

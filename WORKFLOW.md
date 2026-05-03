@@ -25,12 +25,14 @@ hooks:
 agent:
   max_concurrent_agents: 5
   max_turns: 20
-codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
-  approval_policy: never
-  thread_sandbox: workspace-write
-  turn_sandbox_policy:
-    type: workspaceWrite
+  runtime: claude_code
+claude_code:
+  command: claude
+  permission_mode: bypassPermissions
+  turn_timeout_ms: 3600000
+  read_timeout_ms: 5000
+  stall_timeout_ms: 300000
+  extra_args: []
 
 # Multi-repo + dependency-aware PR stacking. Disabled until phase A/B/C/D
 # modules ship; see docs/superpowers/specs/2026-05-03-multi-repo-deps-design.md.
