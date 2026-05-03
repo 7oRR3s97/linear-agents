@@ -4,11 +4,105 @@ defmodule SymphonyElixir.Workspace do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.{Config, PathSafety, Repos, SSH}
+  alias SymphonyElixir.Repos.Worktree
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
 
   @type worker_host :: String.t() | nil
+
+  @doc """
+  Creates a stacking-aware workspace for an issue.
+
+  When `stacking.enabled = true` and the issue resolves to a configured
+  repository, returns a `git worktree` under
+  `<workspace.root>/<repo_handle>/<sanitized_issue_id>` branched from
+  `base_ref` and checked out as `branch_name`.
+
+  When stacking is disabled, falls through to `create_for_issue/2` so the
+  legacy `mkdir` path is preserved.
+
+  ## Options
+
+  - `:base_ref` (required when stacking is enabled and the caller wants a
+    specific base; defaults to the resolved `default_base`).
+  - `:branch_name` (required when stacking is enabled; usually
+    `issue.branch_name`).
+  - `:fetch` (default `true`) — whether to `git fetch` before adding the
+    worktree.
+  """
+  @spec create_worktree_for_issue(SymphonyElixir.Linear.Issue.t(), keyword()) ::
+          {:ok, Path.t()} | {:error, term()}
+  def create_worktree_for_issue(issue, opts \\ []) do
+    settings = Config.settings!()
+
+    if stacking_enabled?(settings) do
+      with {:ok, repo} <- resolve_repo(issue, settings),
+           branch_name when is_binary(branch_name) and branch_name != "" <-
+             Keyword.get(opts, :branch_name, issue.branch_name) do
+        base_ref = Keyword.get(opts, :base_ref, repo.default_base)
+        workspace_root = settings.workspace.root
+
+        case Worktree.add(repo, issue.identifier, base_ref, branch_name,
+               workspace_root: workspace_root,
+               fetch: Keyword.get(opts, :fetch, true)
+             ) do
+          {:ok, %{path: path}} -> {:ok, path}
+          {:error, _} = err -> err
+        end
+      else
+        nil -> {:error, :missing_branch_name}
+        "" -> {:error, :missing_branch_name}
+        {:error, _} = err -> err
+      end
+    else
+      create_for_issue(issue)
+    end
+  end
+
+  @doc """
+  Removes the per-issue worktree (or legacy directory) for `issue`.
+  """
+  @spec remove_worktree_for_issue(SymphonyElixir.Linear.Issue.t()) :: :ok | {:error, term()}
+  def remove_worktree_for_issue(issue) do
+    settings = Config.settings!()
+
+    if stacking_enabled?(settings) do
+      case resolve_repo(issue, settings) do
+        {:ok, repo} ->
+          Worktree.remove(repo, issue.identifier, workspace_root: settings.workspace.root)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      remove_issue_workspaces(issue.identifier)
+    end
+  end
+
+  defp stacking_enabled?(settings) do
+    case settings.stacking do
+      %{enabled: true} -> true
+      _ -> false
+    end
+  end
+
+  defp resolve_repo(issue, settings) do
+    repos_config = repositories_config(settings)
+
+    case Repos.for_issue(issue, repos_config) do
+      {:ok, resolution} -> {:ok, resolution}
+      {:error, reason} -> {:error, {:repo_routing_failed, reason}}
+    end
+  end
+
+  defp repositories_config(settings) do
+    case settings.repositories do
+      %_{} = struct -> Map.from_struct(struct)
+      other when is_map(other) -> other
+      _ -> %{}
+    end
+  end
 
   @spec create_for_issue(map() | String.t() | nil, worker_host()) ::
           {:ok, Path.t()} | {:error, term()}
