@@ -71,7 +71,7 @@ Issue context:
 Identifier: {{ issue.identifier }}
 Title: {{ issue.title }}
 Current status: {{ issue.state }}
-Labels: {{ issue.labels }}
+Labels: {{ issue.labels | join: ", " }}
 URL: {{ issue.url }}
 
 Description:
@@ -89,9 +89,9 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+## Prerequisite: Linear MCP
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+The Linear MCP server is configured in this Claude Code environment. Use `mcp__linear__*` tools to read and update issues. If the MCP server is not available, stop and ask the user to configure it.
 
 ## Default posture
 
@@ -145,14 +145,14 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
 5. For `Todo` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "In Progress")`
-   - find/create `## Codex Workpad` bootstrap comment
+   - find/create `## Agent Workpad` bootstrap comment
    - only then begin analysis/planning/implementation work.
 6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
 
 ## Step 1: Start/continue execution (Todo or In Progress)
 
 1.  Find or create a single persistent scratchpad comment for the issue:
-    - Search existing comments for a marker header: `## Codex Workpad`.
+    - Search existing comments for a marker header: `## Agent Workpad`.
     - Ignore resolved comments while searching; only active/unresolved comments are eligible to be reused as the live workpad.
     - If found, reuse that comment; do not create a new workpad comment.
     - If not found, create one workpad comment and use it for all updates.
@@ -265,7 +265,7 @@ Use this only when completion is blocked by missing required tools or missing au
 1. Treat the rewind as a full approach reset, not incremental patching, unless the human's comment explicitly scopes the change.
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Decide whether to amend the existing PR or close it and open a new one. Default: amend the existing PR by force-pushing the branch.
-4. Update the existing `## Codex Workpad` comment to reflect the new plan; do not create a duplicate workpad.
+4. Update the existing `## Agent Workpad` comment to reflect the new plan; do not create a duplicate workpad.
 5. Resume execution from Step 1 with the existing branch (or from a fresh branch off `origin/main` only if the rewind explicitly justifies it).
 
 ## Completion bar before In Review
@@ -284,7 +284,7 @@ Use this only when completion is blocked by missing required tools or missing au
 - For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
 - If issue state is `Backlog`, do not modify it; wait for human to move to `Todo`.
 - Do not edit the issue body/description for planning or progress tracking.
-- Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
+- Use exactly one persistent workpad comment (`## Agent Workpad`) per issue.
 - If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
 - Temporary proof edits are allowed only for local verification and must be reverted before commit.
 - If out-of-scope improvements are found, create a separate Backlog issue rather
@@ -303,7 +303,7 @@ Use this only when completion is blocked by missing required tools or missing au
 Use this exact structure for the persistent workpad comment and keep it updated in place throughout execution:
 
 ````md
-## Codex Workpad
+## Agent Workpad
 
 ```text
 <hostname>:<abs-path>@<short-sha>

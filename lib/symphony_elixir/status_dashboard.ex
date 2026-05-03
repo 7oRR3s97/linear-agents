@@ -1069,7 +1069,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   @doc false
   @spec humanize_codex_message(term()) :: String.t()
-  def humanize_codex_message(nil), do: "no codex message yet"
+  def humanize_codex_message(nil), do: "agent turn in progress (no streaming output yet)"
 
   def humanize_codex_message(%{event: event, message: message}) do
     payload = unwrap_codex_message_payload(message)
