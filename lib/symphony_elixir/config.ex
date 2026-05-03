@@ -93,8 +93,9 @@ defmodule SymphonyElixir.Config do
 
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
-    with {:ok, settings} <- settings() do
-      validate_semantics(settings)
+    with {:ok, settings} <- settings(),
+         :ok <- validate_semantics(settings) do
+      validate_stacking(settings)
     end
   end
 
@@ -130,6 +131,82 @@ defmodule SymphonyElixir.Config do
 
       true ->
         :ok
+    end
+  end
+
+  defp validate_stacking(%{stacking: %{enabled: true}} = settings) do
+    with :ok <- validate_repositories(settings),
+         :ok <- validate_agent_autonomy(settings),
+         :ok <- validate_unblock_states(settings),
+         :ok <- validate_gh_cli() do
+      :ok
+    end
+  end
+
+  defp validate_stacking(_settings), do: :ok
+
+  defp validate_repositories(%{repositories: repos}) do
+    paths = repos.paths || %{}
+    by_label_handles = repos.by_label |> Map.values()
+    default_handles = if is_binary(repos.default), do: [repos.default], else: []
+
+    referenced = (by_label_handles ++ default_handles) |> Enum.uniq()
+
+    cond do
+      Enum.empty?(paths) ->
+        {:error, :stacking_repositories_paths_missing}
+
+      missing = Enum.find(referenced, fn handle -> not Map.has_key?(paths, handle) end) ->
+        {:error, {:stacking_repository_handle_missing, missing}}
+
+      bad =
+            Enum.find(paths, fn {_handle, path} ->
+              not (is_binary(path) and File.dir?(path) and File.dir?(Path.join(path, ".git")))
+            end) ->
+        {handle, path} = bad
+        {:error, {:stacking_repository_path_invalid, handle, path}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_agent_autonomy(%{agent_autonomy: autonomy}) do
+    cond do
+      not is_binary(autonomy.label_dispatchable) or autonomy.label_dispatchable == "" ->
+        {:error, :stacking_label_dispatchable_required}
+
+      not is_binary(autonomy.label_human_only) or autonomy.label_human_only == "" ->
+        {:error, :stacking_label_human_only_required}
+
+      autonomy.label_dispatchable == autonomy.label_human_only ->
+        {:error, :stacking_autonomy_labels_must_differ}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_unblock_states(%{stacking: stacking, tracker: tracker}) do
+    permitted =
+      MapSet.new((tracker.active_states || []) ++ (tracker.terminal_states || []))
+
+    case Enum.find(stacking.unblock_states || [], fn state -> not MapSet.member?(permitted, state) end) do
+      nil -> :ok
+      bad -> {:error, {:stacking_unblock_state_unknown, bad}}
+    end
+  end
+
+  defp validate_gh_cli do
+    case System.find_executable("gh") do
+      nil ->
+        {:error, :stacking_gh_cli_missing}
+
+      _ ->
+        case System.cmd("gh", ["auth", "status"], stderr_to_stdout: true) do
+          {_output, 0} -> :ok
+          {output, _code} -> {:error, {:stacking_gh_cli_unauthenticated, String.trim(output)}}
+        end
     end
   end
 
