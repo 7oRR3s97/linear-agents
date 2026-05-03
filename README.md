@@ -16,15 +16,13 @@ extended to:
 
 ## Status
 
-Architecture spec is complete and lives at
+Architecture spec lives at
 [`docs/superpowers/specs/2026-05-03-multi-repo-deps-design.md`](docs/superpowers/specs/2026-05-03-multi-repo-deps-design.md).
-Implementation is tracked as Linear issues in the `personal` team's
-[`Linear agent`](https://linear.app/7orr3s97/project/linear-agent-59a2a8f63fe7)
-project, labeled `linear-agent`.
+Operator setup walkthrough at
+[`docs/operators/multi-repo-stacking.md`](docs/operators/multi-repo-stacking.md).
 
-While the new modules are being built, `WORKFLOW.md` ships with
-`stacking.enabled: false`, so the orchestrator behaves like upstream Symphony
-(single-repo, no integration branches, no dependency cascades).
+The agent runtime is **Claude Code**, driven via the `claude` CLI in
+`stream-json` mode (no API key — uses the operator's Claude subscription).
 
 ## How it works (post-upgrade)
 
@@ -37,8 +35,8 @@ While the new modules are being built, `WORKFLOW.md` ships with
    - 2+ hard-dep blockers → base is a synthetic `symphony/integration/<id>`
      branch that the orchestrator force-pushes whenever blockers change.
 4. Creates a `git worktree` against the configured local clone for each issue.
-5. Launches Codex in the worktree with a rendered prompt, including base
-   branch metadata.
+5. Launches Claude Code in the worktree (`stream-json` mode, autonomous
+   permissions) with a rendered prompt that includes base-branch metadata.
 6. The agent edits, commits, pushes, opens a PR, and moves the issue to
    `In Review`. Humans merge.
 
@@ -52,13 +50,13 @@ the rewind to dependents per the design doc.
 2. Install deps: `mix deps.get`.
 3. Set `LINEAR_API_KEY` (Linear → Settings → Security & access → Personal API
    keys).
-4. Make sure the `gh` CLI is installed and authenticated.
-5. Customize `WORKFLOW.md` for your environment:
-   - `repositories.paths` — local clones for every repo this orchestrator
-     should drive.
-   - `tracker.project_slug` — your Linear project slug.
-   - `agent.max_concurrent_agents` — concurrency limit.
-6. Run with `iex -S mix`.
+4. `gh` CLI installed and authenticated (`gh auth login`).
+5. `claude` CLI installed and authenticated (`claude login`).
+6. Customize `WORKFLOW.md` per the [operator guide](docs/operators/multi-repo-stacking.md).
+7. Run with `iex -S mix` or `mix run --no-halt`.
+
+For deeper troubleshooting + log keys + manual recovery, see the
+[operator guide](docs/operators/multi-repo-stacking.md).
 
 ## License
 
