@@ -48,6 +48,7 @@ mix specs.check
 
 ## PR Requirements
 
+- PR title must START with the Linear issue identifier in brackets, e.g. `[PES-137] feat(agent): ...`. Do not place the identifier at the end of the title.
 - PR body must follow `../.github/pull_request_template.md` exactly.
 - Validate PR body locally when needed:
 
