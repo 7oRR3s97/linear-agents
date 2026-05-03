@@ -563,10 +563,57 @@ defmodule SymphonyElixir.Orchestrator do
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running) and
-      worker_slots_available?(state)
+      worker_slots_available?(state) and
+      stacking_guard_passes?(issue)
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
+
+  defp stacking_guard_passes?(%Issue{} = issue) do
+    case Config.settings() do
+      {:ok, settings} ->
+        if get_in(settings, [Access.key(:stacking), Access.key(:enabled)]) == true do
+          snapshot = stacking_snapshot()
+          settings_map = settings_to_map(settings)
+
+          case SymphonyElixir.Deps.DispatchGuard.evaluate(issue, snapshot, settings_map) do
+            :ok ->
+              true
+
+            {:skip, reason} ->
+              Logger.info(
+                "Skipping #{issue_context(issue)} via DispatchGuard: #{inspect(reason)}"
+              )
+
+              false
+          end
+        else
+          true
+        end
+
+      _ ->
+        true
+    end
+  end
+
+  defp stacking_snapshot do
+    %{
+      blockers_by_id: %{},
+      branch_exists?: fn _handle, _branch -> true end
+    }
+  end
+
+  defp settings_to_map(settings) do
+    %{
+      stacking: settings.stacking |> Map.from_struct(),
+      agent_autonomy: settings.agent_autonomy |> Map.from_struct(),
+      tracker:
+        settings.tracker
+        |> Map.from_struct()
+        |> Map.take([:active_states, :terminal_states]),
+      repositories: settings.repositories |> Map.from_struct()
+    }
+  end
 
   defp state_slots_available?(%Issue{state: issue_state}, running) when is_map(running) do
     limit = Config.max_concurrent_agents_for_state(issue_state)
