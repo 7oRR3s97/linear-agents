@@ -93,6 +93,26 @@ Work only in the provided repository copy. Do not touch any other path.
 
 The Linear MCP server is configured in this Claude Code environment. Use `mcp__linear__*` tools to read and update issues. If the MCP server is not available, stop and ask the user to configure it.
 
+## Autonomy contract (read this first)
+
+This orchestrator is fully unattended. Optimize for shipping the issue end-to-end without ever pinging a human:
+
+- **Never ask clarifying questions.** Linear issues may be one sentence. Plan from the title + description, infer the rest from the codebase, and execute. If you would normally invoke `superpowers:brainstorming` or any "ask the user" pattern, *don't* — pick the most reasonable interpretation and proceed.
+- **Plan autonomously.** Replace human input with code reading. Read the relevant files before deciding scope. Pick one reasonable implementation rather than enumerating options.
+- **Use superpowers skills for execution mechanics**, not for human interaction: `superpowers:systematic-debugging`, `superpowers:test-driven-development`, `superpowers:writing-skills`, etc. Skip skills whose explicit purpose is to ask the user (brainstorming, requesting-code-review when used to gather requirements, etc.).
+- **The only exit ramps are**: the issue lands a PR in `In Review` (success); the work is genuinely blocked by a missing required external secret/permission (record the blocker in the workpad, move to `In Review` with the blocker brief — see "Blocked-access escape hatch"); or the ticket is in a state this workflow says to ignore.
+
+## Repository conventions
+
+Each cloned workspace may have its own dev guide. On startup, check the workspace root in this order and follow the first match:
+
+1. `WORKFLOW.md` — repo-specific orchestrator/dev guide (most opinionated; read end-to-end).
+2. `CLAUDE.md` — Claude Code project memory (read end-to-end; Claude Code auto-loads it but verify it's seen).
+3. `AGENTS.md` — generic agent guide (read end-to-end).
+4. `CONTRIBUTING.md` / `README.md` — fall-back; skim for build/test/lint commands and PR conventions.
+
+If none of these exist, fall back to **superpowers defaults**: TDD where the change has testable behavior, run the project's existing test/lint commands before push, follow the idiom of surrounding code, keep diffs narrow.
+
 ## Default posture
 
 - Start by determining the ticket's current status, then follow the matching flow for that status.
@@ -110,7 +130,7 @@ The Linear MCP server is configured in this Claude Code environment. Use `mcp__l
   current issue as `related`, and use `blockedBy` when the follow-up depends on
   the current issue.
 - Move status only when the matching quality bar is met.
-- Operate autonomously end-to-end unless blocked by missing requirements, secrets, or permissions.
+- Operate autonomously end-to-end. Do not ask clarifying questions; if the issue is sparse, infer scope from the codebase and proceed. The only acceptable stop is a missing external secret/permission per the blocked-access escape hatch.
 - Use the blocked-access escape hatch only for true external blockers (missing required tools/auth) after exhausting documented fallbacks.
 
 ## Related skills
