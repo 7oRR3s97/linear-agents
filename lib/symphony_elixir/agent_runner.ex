@@ -4,6 +4,7 @@ defmodule SymphonyElixir.AgentRunner do
   """
 
   require Logger
+  alias SymphonyElixir.Agent.ClaudeCode.Runner, as: ClaudeCodeRunner
   alias SymphonyElixir.Codex.AppServer
   alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
@@ -35,7 +36,7 @@ defmodule SymphonyElixir.AgentRunner do
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
-            run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+            run_agent_turns(workspace, issue, codex_update_recipient, opts, worker_host)
           end
         after
           Workspace.run_after_run_hook(workspace, issue, worker_host)
@@ -75,6 +76,97 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+
+  defp run_agent_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
+    case agent_runtime() do
+      "claude_code" -> run_claude_code_turns(workspace, issue, codex_update_recipient, opts)
+      _ -> run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host)
+    end
+  end
+
+  defp agent_runtime do
+    case Config.settings() do
+      {:ok, settings} -> settings.agent.runtime || "codex"
+      _ -> "codex"
+    end
+  end
+
+  defp run_claude_code_turns(workspace, issue, codex_update_recipient, opts) do
+    max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
+    issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+
+    {:ok, session} = ClaudeCodeRunner.start_session(workspace, issue_id: issue.id)
+
+    try do
+      do_run_claude_code_turns(
+        session,
+        workspace,
+        issue,
+        codex_update_recipient,
+        opts,
+        issue_state_fetcher,
+        1,
+        max_turns
+      )
+    after
+      ClaudeCodeRunner.stop_session(session)
+    end
+  end
+
+  defp do_run_claude_code_turns(
+         session,
+         workspace,
+         issue,
+         codex_update_recipient,
+         opts,
+         issue_state_fetcher,
+         turn_number,
+         max_turns
+       ) do
+    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+
+    on_message = fn
+      {:assistant_output, body} ->
+        send_codex_update(codex_update_recipient, issue, %{
+          event: :assistant_output,
+          body: body
+        })
+    end
+
+    case ClaudeCodeRunner.run_turn(session, prompt, on_message: on_message) do
+      {:ok, %{stdout: output}} ->
+        Logger.info(
+          "Completed claude turn for #{issue_context(issue)} workspace=#{workspace} turn=#{turn_number}/#{max_turns} bytes=#{byte_size(output)}"
+        )
+
+        case continue_with_issue?(issue, issue_state_fetcher) do
+          {:continue, refreshed_issue} when turn_number < max_turns ->
+            do_run_claude_code_turns(
+              session,
+              workspace,
+              refreshed_issue,
+              codex_update_recipient,
+              opts,
+              issue_state_fetcher,
+              turn_number + 1,
+              max_turns
+            )
+
+          {:continue, _refreshed_issue} ->
+            :ok
+
+          {:done, _refreshed_issue} ->
+            :ok
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        Logger.error("claude turn failed for #{issue_context(issue)}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
