@@ -261,6 +261,75 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Repositories do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:default, :string)
+      field(:by_label, :map, default: %{})
+      field(:paths, :map, default: %{})
+      field(:remote, :string, default: "origin")
+      field(:default_base_branch, :string, default: "main")
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:default, :by_label, :paths, :remote, :default_base_branch], empty_values: [])
+    end
+  end
+
+  defmodule AgentAutonomy do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:label_dispatchable, :string, default: "AFK")
+      field(:label_human_only, :string, default: "HITL")
+      field(:default_when_missing, :string, default: "HITL")
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:label_dispatchable, :label_human_only, :default_when_missing], empty_values: [])
+    end
+  end
+
+  defmodule Stacking do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:branch_template, :string, default: "{{ issue.branchName }}")
+
+      field(:integration_branch_template, :string,
+        default: "symphony/integration/{{ issue.identifier | downcase }}"
+      )
+
+      field(:unblock_states, {:array, :string}, default: ["In Review", "Done"])
+      field(:rework_state, :string, default: "Todo")
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(
+        attrs,
+        [:enabled, :branch_template, :integration_branch_template, :unblock_states, :rework_state],
+        empty_values: []
+      )
+    end
+  end
+
   embedded_schema do
     embeds_one(:tracker, Tracker, on_replace: :update, defaults_to_struct: true)
     embeds_one(:polling, Polling, on_replace: :update, defaults_to_struct: true)
@@ -271,6 +340,9 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:hooks, Hooks, on_replace: :update, defaults_to_struct: true)
     embeds_one(:observability, Observability, on_replace: :update, defaults_to_struct: true)
     embeds_one(:server, Server, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:repositories, Repositories, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:agent_autonomy, AgentAutonomy, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:stacking, Stacking, on_replace: :update, defaults_to_struct: true)
   end
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
@@ -363,6 +435,9 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:hooks, with: &Hooks.changeset/2)
     |> cast_embed(:observability, with: &Observability.changeset/2)
     |> cast_embed(:server, with: &Server.changeset/2)
+    |> cast_embed(:repositories, with: &Repositories.changeset/2)
+    |> cast_embed(:agent_autonomy, with: &AgentAutonomy.changeset/2)
+    |> cast_embed(:stacking, with: &Stacking.changeset/2)
   end
 
   defp finalize_settings(settings) do
@@ -383,8 +458,27 @@ defmodule SymphonyElixir.Config.Schema do
         turn_sandbox_policy: normalize_optional_map(settings.codex.turn_sandbox_policy)
     }
 
-    %{settings | tracker: tracker, workspace: workspace, codex: codex}
+    repositories = %{
+      settings.repositories
+      | paths: expand_repo_paths(settings.repositories.paths)
+    }
+
+    %{settings | tracker: tracker, workspace: workspace, codex: codex, repositories: repositories}
   end
+
+  defp expand_repo_paths(nil), do: %{}
+
+  defp expand_repo_paths(paths) when is_map(paths) do
+    Map.new(paths, fn {handle, raw} ->
+      {to_string(handle), expand_repo_path(raw)}
+    end)
+  end
+
+  defp expand_repo_path(value) when is_binary(value) and value != "" do
+    Path.expand(value)
+  end
+
+  defp expand_repo_path(value), do: value
 
   defp normalize_keys(value) when is_map(value) do
     Enum.reduce(value, %{}, fn {key, raw_value}, normalized ->
