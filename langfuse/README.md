@@ -7,7 +7,7 @@ Symphony as a Langfuse trace.
 linear-agents  ──spawns──▶  claude --print  ──Stop hook──▶  langfuse_hook.py
                                                                │
                                                                ▼
-                                                       http://localhost:3000
+                                                       http://localhost:3100
                                                        (Langfuse self-host)
 ```
 
@@ -15,6 +15,8 @@ linear-agents  ──spawns──▶  claude --print  ──Stop hook──▶  
 
 - `docker-compose.yml` — official Langfuse self-host compose (postgres,
   clickhouse, redis, minio, langfuse-web, langfuse-worker).
+- `docker-compose.override.yml` — host-side port remap (3100 instead of
+  the default 3000) so we don't collide with a Next.js dev server.
 - `.env.example` — secrets + first-run bootstrap. Copy to `.env` before
   bringing the stack up.
 
@@ -45,25 +47,38 @@ docker compose up -d
 docker compose logs -f langfuse-web | head -40
 ```
 
-Open http://localhost:3000 — you should see the Langfuse UI logged in as
+Open http://localhost:3100 — you should see the Langfuse UI logged in as
 the bootstrapped admin user. The `linear-agents` project is already
 created (per `LANGFUSE_INIT_PROJECT_*`). Note its public + secret API
 keys.
 
 ## Install the Claude Code Stop hook
 
+The upstream installer asks for credentials interactively (reads
+`/dev/tty`), so on a fresh machine the cleanest path is the manual
+sequence below. It mirrors what `install.sh` does:
+
 ```sh
-# from the linear-agents repo root
-./third_party/langfuse-claudecode/install.sh
+mkdir -p ~/.claude/hooks/langfuse-claudecode
+cp third_party/langfuse-claudecode/langfuse_hook.py ~/.claude/hooks/langfuse-claudecode/
+curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/pyproject.toml \
+  -o ~/.claude/hooks/langfuse-claudecode/pyproject.toml
+
+# Pin langfuse to 3.x — the hook script uses `start_as_current_span`
+# which was removed in 4.x.
+sed -i '' 's/"langfuse>=3.14.4"/"langfuse>=3.14.4,<4"/' \
+  ~/.claude/hooks/langfuse-claudecode/pyproject.toml
+
+(cd ~/.claude/hooks/langfuse-claudecode && uv sync)
+
+# Append to the global Stop hooks array (preserves any existing hooks).
+HOOK_CMD="uv run --project ${HOME}/.claude/hooks/langfuse-claudecode ${HOME}/.claude/hooks/langfuse-claudecode/langfuse_hook.py"
+cp ~/.claude/settings.json ~/.claude/settings.json.bak
+jq --arg cmd "$HOOK_CMD" \
+  '.hooks.Stop += [{"hooks":[{"type":"command","command":$cmd}]}]' \
+  ~/.claude/settings.json > ~/.claude/settings.json.new \
+  && mv ~/.claude/settings.json.new ~/.claude/settings.json
 ```
-
-The installer:
-
-- Copies `langfuse_hook.py` to `~/.claude/hooks/langfuse-claudecode/`.
-- Adds a `Stop` hook entry to `~/.claude/settings.json` that runs the
-  script on every assistant-turn end.
-- Adds a `.claude/settings.local.json` template to the *current* project
-  with the per-project env-var stub.
 
 The hook runs globally for any `claude` session you launch, but only
 sends data when `TRACE_TO_LANGFUSE=true` is set in that session's
@@ -81,13 +96,18 @@ subprocess. So launching Symphony with these set in the shell is enough:
 
 ```sh
 export TRACE_TO_LANGFUSE=true
-export LANGFUSE_BASE_URL=http://localhost:3000
+export LANGFUSE_BASE_URL=http://localhost:3100
 export LANGFUSE_PUBLIC_KEY=pk-lf-symphony-local-dev
 export LANGFUSE_SECRET_KEY=<from your .env>
 export LINEAR_API_KEY=<your linear key>
 
 mise exec -- iex -S mix
 ```
+
+> The Stop hook depends on Langfuse Python SDK 3.x. The packaged
+> `pyproject.toml` already pins `langfuse>=3.14.4,<4`. The 4.x SDK
+> changed the span API and breaks the hook — leave the upper bound in
+> place until the upstream hook script catches up.
 
 Persist these in `~/.zshrc` (or per-project via direnv) so you don't
 re-export every session.
@@ -120,7 +140,7 @@ shared location.
 2. Export the env vars (Path A above).
 3. Run `claude --print "say hi" -p` once from any directory. The hook
    should fire.
-4. Refresh http://localhost:3000 → `linear-agents` project → Traces. You
+4. Refresh http://localhost:3100 → `linear-agents` project → Traces. You
    should see one trace.
 5. Now create an AFK Linear issue and let Symphony dispatch — every
    dispatched agent's turn shows up as a trace.
@@ -145,8 +165,8 @@ shared location.
 
 ### Health checks
 
-- `curl -fsS http://localhost:3000/api/public/health` → `{"status":"OK"}`
-- `curl -fsS http://localhost:3000/api/public/ready` once everything is
+- `curl -fsS http://localhost:3100/api/public/health` → `{"status":"OK"}`
+- `curl -fsS http://localhost:3100/api/public/ready` once everything is
   warm.
 
 ## Stopping
