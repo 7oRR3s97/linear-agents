@@ -70,6 +70,15 @@ Setup is a separate runbook with its own Docker stack. Follow
 [`langfuse/README.md`](langfuse/README.md). To skip it, do nothing — the
 agent flow is unchanged.
 
+## Contributing
+
+Issues, questions, and PRs welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md)
+for what's stable vs. experimental, the local test loop, and PR
+conventions.
+
 ## License
 
-Apache 2.0, inherited from upstream Symphony.
+[Apache 2.0](LICENSE), inherited from upstream Symphony. See
+[NOTICE](NOTICE) for full attribution to OpenAI's Symphony reference
+implementation, the langfuse-claudecode hook (douinc, MIT), and the
+Langfuse self-host compose (Langfuse GmbH, MIT).

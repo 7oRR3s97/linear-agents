@@ -1,0 +1,31 @@
+linear-agents — multi-repo, dependency-aware Linear agent orchestrator.
+
+Copyright 2026 Gabriel Torres and contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This project is a fork of OpenAI's Symphony reference implementation
+(the `elixir/` subdirectory of https://github.com/openai/symphony,
+copyright 2025 OpenAI, Apache License 2.0). Substantial portions of the
+Elixir source under `lib/symphony_elixir/` and `lib/symphony_elixir_web/`
+originate from that upstream and remain under the same license.
+
+This project also bundles, under `third_party/langfuse-claudecode/`, a
+verbatim copy of the Stop hook from
+https://github.com/douinc/langfuse-claudecode (copyright 2025 douinc,
+MIT License). See `third_party/langfuse-claudecode/README.md` and the
+upstream repository for the original license text.
+
+The `langfuse/docker-compose.yml` is the official Langfuse self-host
+compose file (copyright 2024 Langfuse GmbH, MIT License) — see
+https://github.com/langfuse/langfuse for upstream and license details.
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+implied. See the License for the specific language governing
+permissions and limitations under the License.
