@@ -46,6 +46,14 @@ stacking:
   integration_branch_template: "symphony/integration/{{ issue.identifier | downcase }}"
   unblock_states: ["In Review", "Done"]
   rework_state: "Todo"
+
+# Feedback loop: when an `In Review` issue receives a fresh non-workpad
+# Linear comment, auto-rewind to `rework_state` so the agent picks it up
+# on the next dispatch and addresses the feedback.
+feedback:
+  enabled: true
+  rework_state: "Todo"
+  workpad_marker: "## Agent Workpad"
 repositories:
   default: linear-agents
   by_label:
@@ -106,10 +114,11 @@ This orchestrator is fully unattended. Optimize for shipping the issue end-to-en
 
 Each cloned workspace may have its own dev guide. On startup, check the workspace root in this order and follow the first match:
 
-1. `WORKFLOW.md` — repo-specific orchestrator/dev guide (most opinionated; read end-to-end).
-2. `CLAUDE.md` — Claude Code project memory (read end-to-end; Claude Code auto-loads it but verify it's seen).
-3. `AGENTS.md` — generic agent guide (read end-to-end).
-4. `CONTRIBUTING.md` / `README.md` — fall-back; skim for build/test/lint commands and PR conventions.
+1. `.claude/commands/workflow.md` — Claude Code slash-command-shaped workflow definition (most opinionated; read end-to-end). This is the canonical location going forward — repos that adopt linear-agents should put their dev guide here.
+2. `WORKFLOW.md` — legacy / orchestrator-shared workflow file at the repo root (read end-to-end if present).
+3. `CLAUDE.md` — Claude Code project memory (read end-to-end; Claude Code auto-loads it but verify it's seen).
+4. `AGENTS.md` — generic agent guide (read end-to-end).
+5. `CONTRIBUTING.md` / `README.md` — fall-back; skim for build/test/lint commands and PR conventions.
 
 If none of these exist, fall back to **superpowers defaults**: TDD where the change has testable behavior, run the project's existing test/lint commands before push, follow the idiom of surrounding code, keep diffs narrow.
 
@@ -285,11 +294,14 @@ Use this only when completion is blocked by missing required tools or missing au
 
 ## Step 4: Rework handling (issue moved from In Review back to Todo)
 
-1. Treat the rewind as a full approach reset, not incremental patching, unless the human's comment explicitly scopes the change.
-2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
-3. Decide whether to amend the existing PR or close it and open a new one. Default: amend the existing PR by force-pushing the branch.
-4. Update the existing `## Agent Workpad` comment to reflect the new plan; do not create a duplicate workpad.
+A rewind can be triggered three ways: a human moved the state manually, the orchestrator auto-rewound after detecting fresh feedback comments, or a same-repo blocker rewound and the cascade dragged this issue back. Either way:
+
+1. **Read every Linear comment created after the workpad's last `updated_at`** — those are the new feedback items that triggered the rewind. Also read all unresolved PR comments (`gh pr view --comments` + inline review comments).
+2. Build a fresh feedback checklist in the existing `## Agent Workpad` comment under a `### Feedback (round N)` heading; do not create a duplicate workpad.
+3. Treat the rewind as scoped to the feedback unless one of the comments explicitly says otherwise. Don't expand scope. If feedback is genuinely "lgtm, ship it" and there's nothing to do, post a short workpad note and move the issue back to `In Review` immediately.
+4. Decide whether to amend the existing PR or close it and open a new one. Default: amend the existing PR by force-pushing the branch.
 5. Resume execution from Step 1 with the existing branch (or from a fresh branch off `origin/main` only if the rewind explicitly justifies it).
+6. When done, advance the workpad's `updated_at` (any edit suffices). The orchestrator uses that timestamp as the "last agent action" marker — it's how the auto-rework detection avoids re-triggering on the same comments.
 
 ## Completion bar before In Review
 

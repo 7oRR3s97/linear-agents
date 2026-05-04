@@ -226,6 +226,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     with :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
+         _ <- run_feedback_loop(issues),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
     else
@@ -603,6 +604,27 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
+  defp run_feedback_loop(issues) when is_list(issues) do
+    case Config.settings() do
+      {:ok, settings} ->
+        in_review =
+          Enum.filter(issues, fn
+            %Issue{state: state} when is_binary(state) ->
+              normalize_issue_state(state) == "in review"
+
+            _ ->
+              false
+          end)
+
+        SymphonyElixir.Feedback.Loop.run(in_review, settings_to_map(settings))
+
+      _ ->
+        {:ok, %{rewound: [], skipped: []}}
+    end
+  end
+
+  defp run_feedback_loop(_), do: {:ok, %{rewound: [], skipped: []}}
+
   defp settings_to_map(settings) do
     %{
       stacking: settings.stacking |> Map.from_struct(),
@@ -611,7 +633,8 @@ defmodule SymphonyElixir.Orchestrator do
         settings.tracker
         |> Map.from_struct()
         |> Map.take([:active_states, :terminal_states]),
-      repositories: settings.repositories |> Map.from_struct()
+      repositories: settings.repositories |> Map.from_struct(),
+      feedback: settings.feedback |> Map.from_struct()
     }
   end
 

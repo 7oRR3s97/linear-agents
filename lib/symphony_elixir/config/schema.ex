@@ -333,6 +333,25 @@ defmodule SymphonyElixir.Config.Schema do
     end
   end
 
+  defmodule Feedback do
+    @moduledoc false
+    use Ecto.Schema
+    import Ecto.Changeset
+
+    @primary_key false
+    embedded_schema do
+      field(:enabled, :boolean, default: false)
+      field(:rework_state, :string, default: "Todo")
+      field(:workpad_marker, :string, default: "## Agent Workpad")
+    end
+
+    @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+    def changeset(schema, attrs) do
+      schema
+      |> cast(attrs, [:enabled, :rework_state, :workpad_marker], empty_values: [])
+    end
+  end
+
   defmodule Stacking do
     @moduledoc false
     use Ecto.Schema
@@ -376,6 +395,7 @@ defmodule SymphonyElixir.Config.Schema do
     embeds_one(:repositories, Repositories, on_replace: :update, defaults_to_struct: true)
     embeds_one(:agent_autonomy, AgentAutonomy, on_replace: :update, defaults_to_struct: true)
     embeds_one(:stacking, Stacking, on_replace: :update, defaults_to_struct: true)
+    embeds_one(:feedback, Feedback, on_replace: :update, defaults_to_struct: true)
   end
 
   @spec parse(map()) :: {:ok, %__MODULE__{}} | {:error, {:invalid_workflow_config, String.t()}}
@@ -472,6 +492,7 @@ defmodule SymphonyElixir.Config.Schema do
     |> cast_embed(:repositories, with: &Repositories.changeset/2)
     |> cast_embed(:agent_autonomy, with: &AgentAutonomy.changeset/2)
     |> cast_embed(:stacking, with: &Stacking.changeset/2)
+    |> cast_embed(:feedback, with: &Feedback.changeset/2)
   end
 
   defp finalize_settings(settings) do

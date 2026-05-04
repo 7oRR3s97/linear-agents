@@ -15,6 +15,7 @@ defmodule SymphonyElixir.Linear.Issue do
     :assignee_id,
     blocked_by: [],
     labels: [],
+    comments: [],
     assigned_to_worker: true,
     created_at: nil,
     updated_at: nil
@@ -24,6 +25,15 @@ defmodule SymphonyElixir.Linear.Issue do
           id: String.t() | nil,
           identifier: String.t() | nil,
           state: String.t() | nil
+        }
+
+  @type comment :: %{
+          id: String.t() | nil,
+          body: String.t() | nil,
+          created_at: DateTime.t() | nil,
+          updated_at: DateTime.t() | nil,
+          user_id: String.t() | nil,
+          user_name: String.t() | nil
         }
 
   @type t :: %__MODULE__{
@@ -38,6 +48,7 @@ defmodule SymphonyElixir.Linear.Issue do
           assignee_id: String.t() | nil,
           blocked_by: [blocker()],
           labels: [String.t()],
+          comments: [comment()],
           assigned_to_worker: boolean(),
           created_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil
