@@ -54,8 +54,10 @@ defmodule SymphonyElixir.Agent.ClaudeCode.Runner do
       "Spawning #{command} in #{workspace} permission_mode=#{settings.permission_mode}"
     )
 
+    env = forwarded_env()
+
     try do
-      case System.cmd(command, args, cd: workspace, stderr_to_stdout: true) do
+      case System.cmd(command, args, cd: workspace, stderr_to_stdout: true, env: env) do
         {output, 0} ->
           on_message.({:assistant_output, output})
           {:ok, %{stdout: output}}
@@ -66,6 +68,27 @@ defmodule SymphonyElixir.Agent.ClaudeCode.Runner do
     rescue
       e -> {:error, {:exception, Exception.message(e)}}
     end
+  end
+
+  # Tracing env vars that the Stop hook (`langfuse_hook.py`) reads.
+  # Other env (PATH, HOME, …) is inherited by default; this list only adds
+  # the tracing-specific names so they reach the subprocess explicitly.
+  @forwarded_env_keys ~w(
+    TRACE_TO_LANGFUSE
+    LANGFUSE_BASE_URL
+    LANGFUSE_PUBLIC_KEY
+    LANGFUSE_SECRET_KEY
+    CC_LANGFUSE_DEBUG
+  )
+
+  defp forwarded_env do
+    Enum.flat_map(@forwarded_env_keys, fn key ->
+      case System.get_env(key) do
+        nil -> []
+        "" -> []
+        value -> [{key, value}]
+      end
+    end)
   end
 
   defp build_args(settings, prompt) do
