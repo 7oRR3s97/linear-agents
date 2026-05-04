@@ -58,6 +58,18 @@ the rewind to dependents per the design doc.
 For deeper troubleshooting + log keys + manual recovery, see the
 [operator guide](docs/operators/multi-repo-stacking.md).
 
+## Observability (optional)
+
+Tracing is **not required** to run linear-agents. Symphony picks up
+issues, dispatches Claude Code, and ships PRs whether tracing is on or
+off. Add Langfuse when you want to see what agents are doing — every
+turn becomes a trace with generation + tool spans, token costs, and a
+searchable history.
+
+Setup is a separate runbook with its own Docker stack. Follow
+[`langfuse/README.md`](langfuse/README.md). To skip it, do nothing — the
+agent flow is unchanged.
+
 ## License
 
 Apache 2.0, inherited from upstream Symphony.

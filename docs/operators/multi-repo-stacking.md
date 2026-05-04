@@ -14,6 +14,7 @@ dependency-aware PR stacking enabled. For the architecture, read
 - [Operator log keys](#operator-log-keys)
 - [Troubleshooting](#troubleshooting)
 - [Manual recovery](#manual-recovery)
+- [Optional: Langfuse tracing](#optional-langfuse-tracing)
 
 ## Pre-requisites
 
@@ -243,3 +244,24 @@ Symphony creates a fresh worktree on the next dispatch.
 `mix symphony.diagnose <id>` shows the current state. Combine with
 deleting the integration branch (above) to force a clean rebuild on the
 next tick.
+
+## Optional: Langfuse tracing
+
+Symphony ships **without observability by default**. The orchestrator
+picks up issues, dispatches Claude Code, and lands PRs whether tracing
+is configured or not.
+
+If you want a turn-by-turn trace of every agent run — assistant
+responses, every tool call, token costs, latency, searchable history —
+follow the dedicated runbook at
+[`langfuse/README.md`](../../langfuse/README.md). It walks through
+self-hosting Langfuse via Docker and installing the Stop hook that ships
+data per turn.
+
+Symphony's `agent/claude_code/runner.ex` forwards `TRACE_TO_LANGFUSE`,
+`LANGFUSE_BASE_URL`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and
+`CC_LANGFUSE_DEBUG` from the orchestrator's environment to every
+dispatched `claude` subprocess — so once the stack is up and the env
+vars are exported, every agent run shows up in Langfuse without
+per-issue configuration. To turn tracing back off, just unset
+`TRACE_TO_LANGFUSE`.
