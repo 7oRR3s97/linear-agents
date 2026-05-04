@@ -1,71 +1,128 @@
-# Self-hosted Langfuse for the linear-agents orchestrator
+# Langfuse tracing for the linear-agents orchestrator (optional)
 
-A local Langfuse stack that captures every Claude Code turn dispatched by
-Symphony as a Langfuse trace.
+> **Tracing is optional.** Symphony picks up Linear issues, dispatches Claude
+> Code, and ships PRs whether Langfuse is running or not. Add this when you
+> want to *see* what the agents did — turn-by-turn input/output, every tool
+> call, token spend, latency, and a searchable history. If you skip this
+> directory entirely, nothing in the agent flow changes.
+
+## Is this for you?
+
+Set up Langfuse if you want any of:
+
+- A timeline of every Claude Code turn dispatched on each Linear issue.
+- Per-tool spans (every Read/Edit/Bash/MCP invocation on its own row).
+- Token + cost accounting per trace, per session, aggregated across runs.
+- The ability to bookmark, tag, score, or annotate runs after the fact.
+- A persistent log that survives `iex` restarts and workspace cleanup.
+
+Skip it if:
+
+- You're smoke-testing Symphony for the first time and just want to see one
+  PR get opened.
+- You're running on a low-resource machine (the stack is ~1.5 GB RAM
+  steady-state across 6 containers).
+- You already pipe `claude` output to your own observability tooling.
+
+## What you get when it's wired
 
 ```
-linear-agents  ──spawns──▶  claude --print  ──Stop hook──▶  langfuse_hook.py
-                                                               │
-                                                               ▼
-                                                       http://localhost:3100
-                                                       (Langfuse self-host)
+Linear issue picked up
+        │
+        ▼
+ Symphony dispatches `claude --print …`
+        │
+        ▼
+ Claude Code runs autonomously, calls tools
+        │
+        ▼ (Stop hook fires after the response)
+ langfuse_hook.py reads the JSONL transcript
+        │
+        ▼
+ ─────────────────────────────────────────
+ Langfuse trace = one issue's turn
+   ├─ generation span: assistant message + tokens + cost
+   └─ tool spans:    every Read/Edit/Bash/MCP call
+ ─────────────────────────────────────────
+        │
+        ▼
+http://localhost:3100/project/linear-agents/traces
 ```
 
-## What's in this directory
+---
 
-- `docker-compose.yml` — official Langfuse self-host compose (postgres,
-  clickhouse, redis, minio, langfuse-web, langfuse-worker).
-- `docker-compose.override.yml` — host-side port remap (3100 instead of
-  the default 3000) so we don't collide with a Next.js dev server.
-- `.env.example` — secrets + first-run bootstrap. Copy to `.env` before
-  bringing the stack up.
+## Prerequisites
 
-The Stop hook script + installer live under `third_party/langfuse-claudecode/`
-(vendored from `douinc/langfuse-claudecode`).
+| Tool | Why | Install |
+| --- | --- | --- |
+| Container runtime (Docker Desktop / **Colima** / OrbStack / podman) | Hosts the Langfuse stack. | Colima recommended on macOS: `brew install colima docker docker-compose && colima start --cpu 4 --memory 8` |
+| `uv` (Astral's Python package manager) | The Stop hook is a `uv run`-managed Python script. | `brew install uv` |
+| `claude` CLI authenticated | The agent runtime. Runs whether tracing is on or off. | `claude login` (via the Claude Code app or CLI) |
+| `jq` | One-liner that merges the hook into `~/.claude/settings.json`. | `brew install jq` |
 
-## Pre-requisites
+---
 
-| Tool | Why |
-| --- | --- |
-| A container runtime (Docker Desktop, OrbStack, Colima, or podman) | To run the compose stack. |
-| `uv` (Astral's Python package manager) | The Stop hook is a `uv run`-managed Python script. |
-| `claude` CLI authenticated (`claude login`) | The agent runtime. |
+## Setup runbook
 
-Install uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+A clean install end to end. Run from the repo root.
 
-## One-time setup
+### 1. Pick a port for the Langfuse UI
+
+The committed override remaps the host port to `3100` because `:3000` is
+commonly taken by other dev servers. If `3100` is also occupied on your
+machine, edit `langfuse/docker-compose.override.yml` and `langfuse/.env`
+to a free port (and remember to keep `NEXTAUTH_URL` consistent).
+
+### 2. Configure secrets
 
 ```sh
 cd langfuse
 cp .env.example .env
-# edit .env: rotate ENCRYPTION_KEY / NEXTAUTH_SECRET / SALT if this isn't a
-# pure-localhost dev box, set LANGFUSE_INIT_USER_PASSWORD, set a real
-# LANGFUSE_INIT_PROJECT_SECRET_KEY (32 chars).
-
-docker compose up -d
-# wait ~60s for clickhouse + langfuse-web to be ready
-docker compose logs -f langfuse-web | head -40
+$EDITOR .env
 ```
 
-Open http://localhost:3100 — you should see the Langfuse UI logged in as
-the bootstrapped admin user. The `linear-agents` project is already
-created (per `LANGFUSE_INIT_PROJECT_*`). Note its public + secret API
-keys.
+You **must** change at least these two lines before bringing the stack
+up — they default to placeholders by design:
 
-## Install the Claude Code Stop hook
+```env
+LANGFUSE_INIT_USER_PASSWORD=CHANGE-ME-strong-passphrase
+LANGFUSE_INIT_PROJECT_SECRET_KEY=sk-lf-symphony-local-dev-CHANGE-ME
+```
 
-The upstream installer asks for credentials interactively (reads
-`/dev/tty`), so on a fresh machine the cleanest path is the manual
-sequence below. It mirrors what `install.sh` does:
+Pick a real password (you'll log into the Langfuse UI with this) and a
+real secret key (this is what your agents authenticate with — treat it
+like an API key, ~32 chars random is fine).
+
+If this stack will ever be exposed beyond `localhost`, also rotate
+`ENCRYPTION_KEY`, `NEXTAUTH_SECRET`, and `SALT`. Commands at the top of
+`.env.example`.
+
+### 3. Bring the stack up
 
 ```sh
+docker compose up -d
+docker compose logs -f langfuse-web | head -40   # ~30–60s for the migrations + first boot
+```
+
+When the UI loads at http://localhost:3100, log in with the
+`LANGFUSE_INIT_USER_EMAIL` + `LANGFUSE_INIT_USER_PASSWORD` you set. The
+`linear-agents` project is already created for you.
+
+### 4. Install the Claude Code Stop hook
+
+The hook is what actually sends data to Langfuse. It runs after every
+`claude` turn (interactive or `--print`) and reads the transcript file
+Claude Code writes.
+
+```sh
+# from the linear-agents repo root
 mkdir -p ~/.claude/hooks/langfuse-claudecode
 cp third_party/langfuse-claudecode/langfuse_hook.py ~/.claude/hooks/langfuse-claudecode/
 curl -fsSL https://raw.githubusercontent.com/douinc/langfuse-claudecode/main/pyproject.toml \
   -o ~/.claude/hooks/langfuse-claudecode/pyproject.toml
 
-# Pin langfuse to 3.x — the hook script uses `start_as_current_span`
-# which was removed in 4.x.
+# Pin Langfuse SDK to 3.x — the hook calls `start_as_current_span`,
+# which 4.x removed. Without this pin the hook errors silently.
 sed -i '' 's/"langfuse>=3.14.4"/"langfuse>=3.14.4,<4"/' \
   ~/.claude/hooks/langfuse-claudecode/pyproject.toml
 
@@ -73,106 +130,158 @@ sed -i '' 's/"langfuse>=3.14.4"/"langfuse>=3.14.4,<4"/' \
 
 # Append to the global Stop hooks array (preserves any existing hooks).
 HOOK_CMD="uv run --project ${HOME}/.claude/hooks/langfuse-claudecode ${HOME}/.claude/hooks/langfuse-claudecode/langfuse_hook.py"
-cp ~/.claude/settings.json ~/.claude/settings.json.bak
+cp ~/.claude/settings.json ~/.claude/settings.json.bak.$(date +%s)
 jq --arg cmd "$HOOK_CMD" \
   '.hooks.Stop += [{"hooks":[{"type":"command","command":$cmd}]}]' \
   ~/.claude/settings.json > ~/.claude/settings.json.new \
   && mv ~/.claude/settings.json.new ~/.claude/settings.json
 ```
 
-The hook runs globally for any `claude` session you launch, but only
-sends data when `TRACE_TO_LANGFUSE=true` is set in that session's
-environment.
+The hook is now registered for **every** `claude` session you launch
+(globally), but it stays dormant unless `TRACE_TO_LANGFUSE=true` is set
+in that session's environment. So installing the hook costs nothing
+when tracing is off.
 
-## Wire credentials for Symphony's dispatched agents
+### 5. Wire credentials so Symphony's dispatched agents trace
 
-Two equivalent paths — pick one.
+Symphony's runner forwards five env vars into every `claude` subprocess:
 
-### Path A — process env (recommended for development)
+- `TRACE_TO_LANGFUSE`
+- `LANGFUSE_BASE_URL`
+- `LANGFUSE_PUBLIC_KEY`
+- `LANGFUSE_SECRET_KEY`
+- `CC_LANGFUSE_DEBUG` (optional)
 
-Symphony's agent runner forwards every env var starting with `LANGFUSE_`
-or `TRACE_TO_LANGFUSE` (plus `CC_LANGFUSE_DEBUG`) into each `claude`
-subprocess. So launching Symphony with these set in the shell is enough:
+Export them in the shell where you launch `iex -S mix`:
 
 ```sh
 export TRACE_TO_LANGFUSE=true
 export LANGFUSE_BASE_URL=http://localhost:3100
 export LANGFUSE_PUBLIC_KEY=pk-lf-symphony-local-dev
-export LANGFUSE_SECRET_KEY=<from your .env>
-export LINEAR_API_KEY=<your linear key>
+export LANGFUSE_SECRET_KEY=<the value you set in .env>
+export LINEAR_API_KEY=<your linear personal API key>
 
 mise exec -- iex -S mix
 ```
 
-> The Stop hook depends on Langfuse Python SDK 3.x. The packaged
-> `pyproject.toml` already pins `langfuse>=3.14.4,<4`. The 4.x SDK
-> changed the span API and breaks the hook — leave the upper bound in
-> place until the upstream hook script catches up.
+Persist them in `~/.zshrc`, a `.envrc` (direnv), or a launcher script —
+whatever fits your shell habits.
 
-Persist these in `~/.zshrc` (or per-project via direnv) so you don't
-re-export every session.
+### 6. Verify with a smoke test
 
-### Path B — committed `.claude/settings.local.json` per workspace
-
-If you'd rather have the credentials follow the cloned workspace, drop a
-`.claude/settings.local.json` into the source repo and the `after_create`
-hook will carry it forward:
-
-```json
-{
-  "env": {
-    "TRACE_TO_LANGFUSE": "true",
-    "LANGFUSE_BASE_URL": "http://host.docker.internal:3000",
-    "LANGFUSE_PUBLIC_KEY": "pk-lf-symphony-local-dev",
-    "LANGFUSE_SECRET_KEY": "sk-lf-symphony-local-dev-..."
-  }
-}
+```sh
+cd /tmp && rm -rf lf-smoke && mkdir lf-smoke && cd lf-smoke
+env TRACE_TO_LANGFUSE=true \
+    LANGFUSE_BASE_URL=http://localhost:3100 \
+    LANGFUSE_PUBLIC_KEY=pk-lf-symphony-local-dev \
+    LANGFUSE_SECRET_KEY=<from .env> \
+  claude --print "say 'tracing live' and stop"
 ```
 
-`.claude/settings.local.json` is in `.gitignore` by Claude Code
-convention; never commit it with real secrets. For a multi-machine setup,
-distribute the file out-of-band and let `after_create` copy it from a
-shared location.
+Then refresh http://localhost:3100/project/linear-agents/traces — you
+should see one trace named `Claude Code - Turn 1` with two
+observations.
 
-## Smoke test
+If nothing shows up, see [Troubleshooting](#troubleshooting).
 
-1. Bring the stack up (`docker compose up -d`).
-2. Export the env vars (Path A above).
-3. Run `claude --print "say hi" -p` once from any directory. The hook
-   should fire.
-4. Refresh http://localhost:3100 → `linear-agents` project → Traces. You
-   should see one trace.
-5. Now create an AFK Linear issue and let Symphony dispatch — every
-   dispatched agent's turn shows up as a trace.
+---
+
+## Turning tracing off
+
+Three ways, pick whichever:
+
+- **Don't set `TRACE_TO_LANGFUSE`** in the shell → the hook fires but
+  exits immediately when it sees the var is unset. Free, no
+  side-effects.
+- **Stop the stack** (`docker compose stop` from `langfuse/`) → the hook
+  fires, tries to send, fails silently. Slightly wasteful but harmless.
+- **Remove the global hook entry** from `~/.claude/settings.json` →
+  rolls back step 4 entirely.
+
+Symphony's agent flow is unaffected by any of these. The orchestrator
+never reads tracing state; the runner just forwards env vars.
+
+---
 
 ## Troubleshooting
 
 ### Nothing shows up in Langfuse
 
-- `CC_LANGFUSE_DEBUG=true claude --print "test"` — surfaces hook errors
-  on stderr.
-- `tail -f ~/.claude/hooks/langfuse-claudecode/langfuse_hook.log`
-  (created by the script when debug is on).
-- Confirm `TRACE_TO_LANGFUSE=true` is in the subprocess environment:
-  `printenv | grep LANGFUSE` from inside an interactive `claude` session.
+```sh
+# Tail the hook log:
+tail -f ~/.claude/state/langfuse_hook.log
+
+# Or run a one-shot with debug:
+env TRACE_TO_LANGFUSE=true \
+    LANGFUSE_BASE_URL=http://localhost:3100 \
+    LANGFUSE_PUBLIC_KEY=pk-lf-symphony-local-dev \
+    LANGFUSE_SECRET_KEY=<...> \
+    CC_LANGFUSE_DEBUG=true \
+  claude --print "test"
+```
+
+The most common failure modes:
+
+- **Hook log says `start_as_current_span` is not an attribute** → you
+  ended up on Langfuse SDK 4.x. Re-pin and re-sync (step 4 above).
+- **Hook log empty** → `TRACE_TO_LANGFUSE` isn't set in the subprocess.
+  Inside Symphony, this means the env var didn't reach the BEAM that
+  spawned the worker; export it before `iex -S mix`.
+- **Hook log shows auth error** → key mismatch between `.env` and
+  exported env vars. Compare them.
 
 ### Stack won't start
 
-- `docker compose logs langfuse-web | tail -50` — usually clickhouse not
-  ready yet; wait and retry.
-- Postgres data lives in the `langfuse_postgres_data` named volume.
-  `docker compose down -v` wipes everything.
+```sh
+docker compose logs langfuse-web | tail -50
+```
 
-### Health checks
+Usually clickhouse or postgres needs a few more seconds; just wait and
+retry. If the web container keeps restarting, check `docker compose ps`
+for unhealthy services and inspect their logs.
 
-- `curl -fsS http://localhost:3100/api/public/health` → `{"status":"OK"}`
-- `curl -fsS http://localhost:3100/api/public/ready` once everything is
-  warm.
-
-## Stopping
+### Port collision
 
 ```sh
-docker compose stop          # keep data
-docker compose down          # remove containers, keep volumes
-docker compose down -v       # wipe everything (destructive)
+lsof -nP -iTCP:3100 -sTCP:LISTEN
 ```
+
+If something else owns the port, edit
+`langfuse/docker-compose.override.yml` and `langfuse/.env` to a free one
+(e.g., 3333, 4040). Restart with `docker compose up -d`.
+
+### `~/.claude/settings.json` got mangled
+
+A backup was written to `~/.claude/settings.json.bak.<timestamp>` by step
+4. Restore: `cp ~/.claude/settings.json.bak.<ts> ~/.claude/settings.json`.
+
+---
+
+## Stopping and wiping
+
+```sh
+docker compose stop          # stop containers, keep data
+docker compose down          # remove containers, keep volumes
+docker compose down -v       # destructive: wipes Postgres + Clickhouse + Minio
+```
+
+Volumes that hold your data: `langfuse_postgres_data`,
+`langfuse_clickhouse_data`, `langfuse_minio_data`. They survive
+`stop`/`down` and only disappear with `down -v`.
+
+---
+
+## Files in this directory
+
+- `docker-compose.yml` — official Langfuse self-host compose (postgres,
+  clickhouse, redis, minio, langfuse-web, langfuse-worker).
+- `docker-compose.override.yml` — host port remap to **3100**. Edit if
+  you need a different port; commit a different override per machine.
+- `.env.example` — secrets template + first-run bootstrap (org, project,
+  admin user, API keys). Copy to `.env` (gitignored) before bringing the
+  stack up.
+- `.gitignore` — keeps `.env` and any logs out of version control.
+
+The Stop-hook script and installer are vendored under
+`../third_party/langfuse-claudecode/` (mirror of
+`douinc/langfuse-claudecode`).
