@@ -72,6 +72,39 @@ defmodule SymphonyElixir.Agent.ClaudeCode.RunnerTest do
       assert output =~ "say hi"
     end
 
+    test "forwards LANGFUSE_* env vars to the subprocess", %{tmp_dir: tmp} do
+      stub = install_stub!(tmp, """
+      #!/bin/sh
+      env | grep -E "^(TRACE_TO_LANGFUSE|LANGFUSE_PUBLIC_KEY|LANGFUSE_BASE_URL|CC_LANGFUSE_DEBUG)="
+      """)
+
+      System.put_env("TRACE_TO_LANGFUSE", "true")
+      System.put_env("LANGFUSE_PUBLIC_KEY", "pk-test")
+      System.put_env("LANGFUSE_BASE_URL", "http://localhost:3000")
+
+      on_exit(fn ->
+        System.delete_env("TRACE_TO_LANGFUSE")
+        System.delete_env("LANGFUSE_PUBLIC_KEY")
+        System.delete_env("LANGFUSE_BASE_URL")
+      end)
+
+      session = %{
+        workspace: tmp,
+        issue_id: "id-1",
+        settings: %{
+          command: stub,
+          permission_mode: "bypassPermissions",
+          extra_args: []
+        }
+      }
+
+      assert {:ok, %{stdout: output}} = Runner.run_turn(session, "go")
+
+      assert output =~ "TRACE_TO_LANGFUSE=true"
+      assert output =~ "LANGFUSE_PUBLIC_KEY=pk-test"
+      assert output =~ "LANGFUSE_BASE_URL=http://localhost:3000"
+    end
+
     test "calls on_message with the captured assistant output", %{tmp_dir: tmp} do
       stub = install_stub!(tmp, """
       #!/bin/sh
