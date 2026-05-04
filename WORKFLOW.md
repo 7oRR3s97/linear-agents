@@ -148,6 +148,45 @@ If none of these exist, fall back to **superpowers defaults**: TDD where the cha
 - `commit`: produce clean, logical commits during implementation.
 - `push`: keep remote branch current and publish updates.
 - `pull`: keep branch updated with latest `origin/main` before handoff.
+- `playwright` / Playwright MCP: drive browser-level interface tests when the change touches the UI. Prefer the Playwright MCP tools (`mcp__playwright__*`) for ad-hoc verification; use `npx playwright test` for repeatable suites the repo can keep.
+- `video-recording`: capture a short walkthrough of user-visible changes and attach it to the PR for reviewer context.
+
+## Front-end and UI work
+
+When the change touches user-visible behaviour (any file in `assets/`,
+`priv/static/`, components, pages, styles, or anything rendered in a
+browser), upgrade the validation posture:
+
+1. **Interface tests with Playwright.** Drive the actual rendered UI,
+   not just unit tests. Use the Playwright MCP for one-off
+   verification (navigate, click, assert text/state) and `npx
+   playwright test` for any reusable test the repo wants to keep.
+   Treat a change without an interface test on the affected path as
+   incomplete.
+2. **Video evidence on the PR.** Record a short walkthrough of the
+   change in action — the screen the user sees, the interaction, and
+   the new outcome. Use the `video-recording` skill (or
+   `playwright codegen --video=on` / Playwright's `video: 'on'` test
+   option as a fallback) to capture it. Attach the resulting file to
+   the GitHub PR as part of the description, e.g.:
+
+   ```md
+   ## Walkthrough
+   <video src="https://github.com/<owner>/<repo>/assets/<id>.mp4"></video>
+   ```
+
+   Drag-drop the file into the PR description box on github.com to
+   get the asset URL, or use `gh api ... /repos/{owner}/{repo}/issues/{number}/comments`
+   to upload via the API. If the recording can't be attached for any
+   reason, paste annotated screenshots instead and note in the workpad
+   why a video wasn't possible.
+3. **Update the workpad.** Add a `### UI walkthrough` checklist under
+   `## Agent Workpad` listing each user-visible path you exercised and
+   the outcome ("login → dashboard → new feature triggers → expected
+   modal opens → no console errors").
+
+For pure backend / library / infrastructure work, skip this section
+entirely; the standard test loop is the bar.
 
 ## Status map
 
