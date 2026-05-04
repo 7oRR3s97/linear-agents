@@ -14,6 +14,7 @@ dependency-aware PR stacking enabled. For the architecture, read
 - [Operator log keys](#operator-log-keys)
 - [Troubleshooting](#troubleshooting)
 - [Manual recovery](#manual-recovery)
+- [Feedback loop (auto-rework on Linear comments)](#feedback-loop-auto-rework-on-linear-comments)
 - [Optional: Langfuse tracing](#optional-langfuse-tracing)
 
 ## Pre-requisites
@@ -244,6 +245,66 @@ Symphony creates a fresh worktree on the next dispatch.
 `mix symphony.diagnose <id>` shows the current state. Combine with
 deleting the integration branch (above) to force a clean rebuild on the
 next tick.
+
+## Feedback loop (auto-rework on Linear comments)
+
+By default a human reviewer either approves a PR (and merges) or rejects
+it by manually moving the Linear issue back to `Todo`. With the feedback
+loop turned on, the second step is automatic: leave a comment on the
+Linear issue and the orchestrator notices on the next poll tick.
+
+### How it works
+
+For every issue currently in `In Review`, the orchestrator:
+
+1. Loads the issue's comments (already part of the existing Linear poll —
+   no extra roundtrip).
+2. Finds the workpad comment (one whose body starts with the configured
+   `feedback.workpad_marker`, default `## Agent Workpad`).
+3. Compares each non-workpad comment's `created_at` against the
+   workpad's `updated_at`.
+4. If at least one comment is newer, moves the issue to
+   `feedback.rework_state` (default `Todo`) via the Linear API.
+
+The agent's prompt's "Step 4: Rework handling" reads the comments under
+the workpad's timestamp on the next dispatch, addresses each, force-pushes
+the existing branch, and advances the workpad — which clears the
+"unread feedback" condition until the next reviewer comment arrives.
+
+### Configuration
+
+Default in this repo's `WORKFLOW.md`:
+
+```yaml
+feedback:
+  enabled: true
+  rework_state: "Todo"
+  workpad_marker: "## Agent Workpad"
+```
+
+To disable, set `feedback.enabled: false`. With it off, manual state
+moves remain the only rework trigger.
+
+### Reviewer flow
+
+```
+1. Reviewer opens the Linear issue (PR is in `In Review`).
+2. Reviewer adds a comment: "the regex on line 42 doesn't handle empty
+   inputs — please fix and add a test."
+3. Within `polling.interval_ms` (5s by default) the orchestrator picks
+   it up, moves the issue to `Todo`, and logs the rewind.
+4. Next dispatch tick, the agent picks up the issue, reads the new
+   comment, makes the fix on the existing branch, force-pushes, updates
+   the workpad, returns the issue to `In Review`.
+5. Reviewer is notified by GitHub of the new push and reviews again.
+```
+
+### Scaling note
+
+The detector reads every issue's comments inline with the existing
+candidate fetch — no per-issue polling. Cost stays the same as the
+baseline poll loop. The rewind itself is one Linear `issueUpdate` per
+rewound issue, which fires at most once per fresh feedback signature.
 
 ## Optional: Langfuse tracing
 

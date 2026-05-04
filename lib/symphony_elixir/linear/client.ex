@@ -43,6 +43,19 @@ defmodule SymphonyElixir.Linear.Client do
             }
           }
         }
+        comments(first: 50) {
+          nodes {
+            id
+            body
+            createdAt
+            updatedAt
+            user {
+              id
+              name
+              displayName
+            }
+          }
+        }
         createdAt
         updatedAt
       }
@@ -85,6 +98,19 @@ defmodule SymphonyElixir.Linear.Client do
               state {
                 name
               }
+            }
+          }
+        }
+        comments(first: 50) {
+          nodes {
+            id
+            body
+            createdAt
+            updatedAt
+            user {
+              id
+              name
+              displayName
             }
           }
         }
@@ -460,6 +486,7 @@ defmodule SymphonyElixir.Linear.Client do
       assignee_id: assignee_field(assignee, "id"),
       blocked_by: extract_blockers(issue),
       labels: extract_labels(issue),
+      comments: extract_comments(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
       created_at: parse_datetime(issue["createdAt"]),
       updated_at: parse_datetime(issue["updatedAt"])
@@ -571,6 +598,30 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp extract_blockers(_), do: []
+
+  defp extract_comments(%{"comments" => %{"nodes" => nodes}}) when is_list(nodes) do
+    nodes
+    |> Enum.map(fn node ->
+      user = node["user"] || %{}
+
+      %{
+        id: node["id"],
+        body: node["body"],
+        created_at: parse_datetime(node["createdAt"]),
+        updated_at: parse_datetime(node["updatedAt"]),
+        user_id: user["id"],
+        user_name: user["displayName"] || user["name"]
+      }
+    end)
+    |> Enum.sort_by(fn c ->
+      case c.created_at do
+        %DateTime{} = dt -> DateTime.to_unix(dt, :microsecond)
+        _ -> 0
+      end
+    end)
+  end
+
+  defp extract_comments(_), do: []
 
   defp parse_datetime(nil), do: nil
 
