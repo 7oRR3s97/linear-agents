@@ -1,0 +1,8 @@
+# Local override: remap langfuse-web off port 3000 (collides with another
+# dev server on this host) and keep NEXTAUTH_URL in sync.
+services:
+  langfuse-web:
+    ports: !override
+      - 3100:3000
+    environment:
+      NEXTAUTH_URL: http://localhost:3100
