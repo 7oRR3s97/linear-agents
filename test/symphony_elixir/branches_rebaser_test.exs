@@ -93,6 +93,30 @@ defmodule SymphonyElixir.Branches.RebaserTest do
       assert String.trim(head_after) == head_before
     end
 
+    test "refuses to rebase a protected base branch (main)", %{repo: repo} do
+      assert {:error, {:rejected_protected_branch, "main"}} =
+               Rebaser.rebase_onto(repo, "main", "main", fetch: false)
+    end
+
+    test "refuses to rebase common protected names regardless of repo's default_base", %{repo: repo} do
+      for name <- ["main", "master", "trunk", "develop"] do
+        assert {:error, {:rejected_protected_branch, ^name}} =
+                 Rebaser.rebase_onto(repo, name, "main", fetch: false)
+      end
+    end
+
+    test "refuses to rebase the configured default_base when it's non-standard" do
+      custom_repo = %{
+        handle: "weird",
+        path: "/tmp/weird",
+        remote: "origin",
+        default_base: "production"
+      }
+
+      assert {:error, {:rejected_protected_branch, "production"}} =
+               Rebaser.rebase_onto(custom_repo, "production", "main", fetch: false)
+    end
+
     test "does not disturb the source clone's checkout", %{repo: repo} do
       push_branch(repo.path, "feat/A", "a.txt", "a\n")
       push_branch(repo.path, "feat/X", "x.txt", "x\n")
