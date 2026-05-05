@@ -120,23 +120,6 @@ For each repository configured in `repositories.paths`:
    `gh auth login`. The CLI must be able to push to the repo and edit PRs.
 3. Add a `linear-agent` PR label (or whatever you use as your tag).
    Symphony stamps every PR it opens with this label.
-4. **Branch protection on `main` is assumed to be on by org default**
-   for every repo you point Symphony at — that's the server-side
-   guarantee agents can never merge themselves. If a repo somehow
-   doesn't have it (legacy repo, brand-new repo, etc.), enable it
-   before pointing the orchestrator at the repo. The repo-level
-   defaults Symphony's safety story relies on:
-   - PR required before merge.
-   - At least one approving review.
-   - Force pushes disabled.
-   - Deletions disabled.
-
-   Verify quickly with:
-
-   ```sh
-   gh api repos/<owner>/<repo>/branches/main/protection \
-     --jq '{required_pull_request_reviews, allow_force_pushes, allow_deletions}'
-   ```
 
 ## Linear setup
 
@@ -267,7 +250,8 @@ next tick.
 
 ## Hard rule: agents never merge to main
 
-Merging is **100% a human responsibility**. Four layers enforce this:
+Merging is **100% a human responsibility**. Three layers enforce this
+inside Symphony:
 
 1. **Prompt** — `WORKFLOW.md` includes a hard-prohibition section that
    names the forbidden commands explicitly (`gh pr merge`,
@@ -285,12 +269,6 @@ Merging is **100% a human responsibility**. Four layers enforce this:
    on any push to `refs/heads/(main|master|trunk|develop|production)`.
    So even if the agent invokes raw `git push origin main`, the local
    client refuses before going over the wire.
-4. **GitHub branch protection** — assumed on by org default for every
-   repo Symphony drives. Server-side guarantee that agents can't
-   merge regardless of what the orchestrator code does. The other
-   three layers are defense in depth on top of this baseline; if you
-   ever point Symphony at a repo where protection isn't on, layers
-   1–3 still hold but you've lost the strongest one.
 
 Recovery if the agent reports a protected-branch refusal: the agent's
 work is correct — it tried to do the right thing and got stopped. Land
