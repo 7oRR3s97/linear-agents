@@ -14,6 +14,7 @@ dependency-aware PR stacking enabled. For the architecture, read
 - [Operator log keys](#operator-log-keys)
 - [Troubleshooting](#troubleshooting)
 - [Manual recovery](#manual-recovery)
+- [Post-deploy mediation (auto-rebase downstream PRs)](#post-deploy-mediation-auto-rebase-downstream-prs)
 - [Feedback loop (auto-rework on Linear comments)](#feedback-loop-auto-rework-on-linear-comments)
 - [Optional: Langfuse tracing](#optional-langfuse-tracing)
 
@@ -245,6 +246,64 @@ Symphony creates a fresh worktree on the next dispatch.
 `mix symphony.diagnose <id>` shows the current state. Combine with
 deleting the integration branch (above) to force a clean rebuild on the
 next tick.
+
+## Post-deploy mediation (auto-rebase downstream PRs)
+
+When a hard-dep blocker merges to `main`, its dependents' branches still
+carry the now-merged commits. The orchestrator actively rebases each
+dependent's branch onto the new `main` and force-pushes — so dependent
+PRs converge to clean diffs without needing the agent to re-dispatch.
+
+### The flow
+
+```
+A merges → A's Linear issue → Done
+            ↓
+   Reconciler tick (next 5s)
+            ↓
+   For each dependent X where X's same-repo blockers are all Done
+   AND X is not currently In Progress:
+            ↓
+        Branches.Rebaser.rebase_onto(X.branch, main)
+            ↓
+        - clean rebase  →  force-push-with-lease  →  X's PR diff cleans up
+        - already-up-to-date  →  no-op
+        - conflict  →  emit :rebase_run conflict event; X is left untouched
+                       on origin (safe), dependent's PR carries the
+                       merged commits until the next agent dispatch
+                       resolves the conflict
+            ↓
+   Cascading: X's branch SHA changes → that's a fresh blocker SHA event
+   for X's downstream dependents on the next tick. Each rebase ripples
+   through the chain one tick at a time.
+```
+
+### Conditions that defer the rebase
+
+The orchestrator does **not** rebase when:
+
+- The dependent is currently `In Progress` — would yank state from
+  under the running agent. Defer until the agent exits; the next tick
+  picks it up.
+- The dependent has no `branch_name` — there's nothing to rebase yet.
+- The dependent has any same-repo blocker still active (not Done).
+  Single-blocker rebase fires only when *all* hard-dep blockers have
+  merged. Multi-blocker scenarios continue to use `IntegrationBuilder`
+  rebuilds (a different code path).
+
+### When the rebase conflicts
+
+Conflicts surface as `{:rebase_run, "PES-X", {:conflict, files}}` on
+the reconciler's event stream and are visible in the orchestrator's
+logs. The dependent's branch on origin is **not modified** when a
+rebase conflicts — `git rebase --abort` runs first, no force-push
+fires.
+
+The dependent stays in `In Review`. To recover: a reviewer can leave a
+Linear comment ("merge conflict on rebase, please refresh the
+branch") which the [feedback loop](#feedback-loop-auto-rework-on-linear-comments)
+catches on the next tick, moving the dependent to `Todo` so the agent
+can resolve the conflict and force-push from a clean rebase.
 
 ## Feedback loop (auto-rework on Linear comments)
 
