@@ -147,13 +147,13 @@ defmodule SymphonyElixir.Branches.Reconciler do
 
     events =
       Enum.flat_map(issues, fn issue ->
-        reconcile_one(issue, blockers_by_id, settings, repos_config, forge_repos, builder)
+        reconcile_one(issue, blockers_by_id, settings, repos_config, forge_repos, builder, opts)
       end)
 
     {:ok, events}
   end
 
-  defp reconcile_one(issue, blockers_by_id, settings, repos_config, forge_repos, builder) do
+  defp reconcile_one(issue, blockers_by_id, settings, repos_config, forge_repos, builder, opts) do
     case Repos.for_issue(issue, repos_config) do
       {:ok, %{handle: handle, path: path} = repo_resolution} ->
         blockers = resolve_full_blockers(issue, blockers_by_id)
@@ -174,7 +174,16 @@ defmodule SymphonyElixir.Branches.Reconciler do
         # Side-effect 4: PR retarget on Done.
         pr_event = maybe_route_pr(issue, blockers, settings, forge_repos, path)
 
-        Enum.reject([integration_event, rebase_event] ++ cascade_events ++ [pr_event], &is_nil/1)
+        # Side-effect 5: active post-deploy rebase. When all hard-dep
+        # blockers are merged (Done) and the dependent isn't currently
+        # In Progress, rebase the dependent's branch onto the new main
+        # so its PR diff stops carrying the merged blocker's commits.
+        rebase_run_event = maybe_run_post_deploy_rebase(issue, same_repo, repo_resolution, settings, opts)
+
+        Enum.reject(
+          [integration_event, rebase_event] ++ cascade_events ++ [pr_event, rebase_run_event],
+          &is_nil/1
+        )
 
       {:error, _reason} ->
         []
@@ -288,6 +297,41 @@ defmodule SymphonyElixir.Branches.Reconciler do
   end
 
   defp maybe_schedule_rebase(_, _), do: nil
+
+  defp maybe_run_post_deploy_rebase(%Issue{} = issue, same_repo_blockers, repo_resolution, settings, opts) do
+    rebaser = Keyword.get(opts, :rebaser, &SymphonyElixir.Branches.Rebaser.rebase_onto/4)
+    in_progress_ids = Keyword.get(opts, :in_progress_ids, MapSet.new())
+
+    cond do
+      MapSet.member?(in_progress_ids, issue.id) ->
+        nil
+
+      not is_binary(issue.branch_name) or issue.branch_name == "" ->
+        nil
+
+      not all_blockers_done?(same_repo_blockers, settings) ->
+        nil
+
+      true ->
+        target = repo_resolution.default_base || "main"
+
+        case rebaser.(repo_resolution, issue.branch_name, target, fetch: false) do
+          :ok -> nil
+          {:ok, _shas} = ok -> {:rebase_run, issue.identifier, ok}
+          {:noop, _} = noop -> {:rebase_run, issue.identifier, noop}
+          {:conflict, _} = conflict -> {:rebase_run, issue.identifier, conflict}
+          {:error, _} = err -> {:rebase_run, issue.identifier, err}
+        end
+    end
+  end
+
+  defp all_blockers_done?([], _settings), do: false
+
+  defp all_blockers_done?(blockers, _settings) do
+    Enum.all?(blockers, fn b ->
+      is_binary(b.state) and String.downcase(b.state) == "done"
+    end)
+  end
 
   defp maybe_route_pr(%Issue{} = issue, blockers, settings, forge_repos, _path) do
     repos_config = repositories_config(settings)

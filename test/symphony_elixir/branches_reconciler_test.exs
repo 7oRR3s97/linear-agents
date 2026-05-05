@@ -127,6 +127,84 @@ defmodule SymphonyElixir.Branches.ReconcilerTest do
     end
   end
 
+  describe "post-deploy active rebase" do
+    test "all-blockers-Done triggers Rebaser when dependent isn't In Progress", %{source: source} do
+      x =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          state: "In Review",
+          blocked_by: [%{id: "A", state: "Done"}]
+        )
+
+      a = blocker_issue("PES-A", "src", "feat/A", "A", "Done")
+      cfg = settings(repo_path: source)
+
+      parent = self()
+
+      rebaser = fn _repo, branch, target, _opts ->
+        send(parent, {:rebase_called, branch, target})
+        {:ok, %{from: "old", to: "new"}}
+      end
+
+      {:ok, events} = Reconciler.run([x], [a], cfg, rebaser: rebaser)
+
+      assert_received {:rebase_called, "feat/x", "main"}
+      assert {:rebase_run, "PES-X", {:ok, %{from: "old", to: "new"}}} in events
+    end
+
+    test "skips rebase when dependent is currently In Progress", %{source: source} do
+      x =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          state: "In Progress",
+          blocked_by: [%{id: "A", state: "Done"}]
+        )
+
+      a = blocker_issue("PES-A", "src", "feat/A", "A", "Done")
+      cfg = settings(repo_path: source)
+
+      rebaser = fn _, _, _, _ -> flunk("rebase should be deferred for In Progress") end
+
+      {:ok, events} =
+        Reconciler.run([x], [a], cfg, rebaser: rebaser, in_progress_ids: MapSet.new(["id-PES-X"]))
+
+      refute Enum.any?(events, &match?({:rebase_run, _, _}, &1))
+    end
+
+    test "doesn't rebase while a blocker is still In Review (not all done)", %{source: source} do
+      x =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          state: "In Review",
+          blocked_by: [
+            %{id: "A", state: "Done"},
+            %{id: "B", state: "In Review"}
+          ]
+        )
+
+      a = blocker_issue("PES-A", "src", "feat/A", "A", "Done")
+      b = blocker_issue("PES-B", "src", "feat/B", "B", "In Review")
+      cfg = settings(repo_path: source)
+
+      rebaser = fn _, _, _, _ -> flunk("rebase only fires when ALL blockers are Done") end
+
+      {:ok, _events} = Reconciler.run([x], [a, b], cfg, rebaser: rebaser)
+    end
+
+    test "surfaces rebase conflicts as :rebase_run events without crashing", %{source: source} do
+      x =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          state: "In Review",
+          blocked_by: [%{id: "A", state: "Done"}]
+        )
+
+      a = blocker_issue("PES-A", "src", "feat/A", "A", "Done")
+      cfg = settings(repo_path: source)
+      rebaser = fn _, _, _, _ -> {:conflict, ["shared.txt"]} end
+
+      {:ok, events} = Reconciler.run([x], [a], cfg, rebaser: rebaser)
+
+      assert {:rebase_run, "PES-X", {:conflict, ["shared.txt"]}} in events
+    end
+  end
+
   describe "cascade detection on In Review → Todo rewind" do
     test "emits a cascade event the first time, idempotent thereafter", %{source: source} do
       push_branch_with_file(source, "feat/A", "a.txt", "a\n")
