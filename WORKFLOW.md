@@ -20,6 +20,26 @@ hooks:
     if command -v mise >/dev/null 2>&1; then
       mise trust && mise exec -- mix deps.get
     fi
+    # Refuse local pushes to any protected base branch. Server-side
+    # branch protection on GitHub is the belt; this is the suspenders.
+    cat > .git/hooks/pre-push <<'PREPUSH'
+    #!/usr/bin/env bash
+    # Symphony pre-push guard: agents must never push to a protected
+    # base branch. Override only in genuine human-driven recoveries via
+    # `git push --no-verify`, which is itself a flag the agent prompt
+    # forbids.
+    set -e
+    PROTECTED_REGEX="^refs/heads/(main|master|trunk|develop|production)$"
+    while read local_ref local_sha remote_ref remote_sha; do
+      if [[ "$remote_ref" =~ $PROTECTED_REGEX ]]; then
+        echo "symphony pre-push: refusing push to protected branch ($remote_ref)" >&2
+        echo "merging is a human responsibility — open a PR instead" >&2
+        exit 1
+      fi
+    done
+    exit 0
+    PREPUSH
+    chmod +x .git/hooks/pre-push
   before_remove: |
     mise exec -- mix workspace.before_remove
 agent:
@@ -109,6 +129,33 @@ This orchestrator is fully unattended. Optimize for shipping the issue end-to-en
 - **Plan autonomously.** Replace human input with code reading. Read the relevant files before deciding scope. Pick one reasonable implementation rather than enumerating options.
 - **Use superpowers skills for execution mechanics**, not for human interaction: `superpowers:systematic-debugging`, `superpowers:test-driven-development`, `superpowers:writing-skills`, etc. Skip skills whose explicit purpose is to ask the user (brainstorming, requesting-code-review when used to gather requirements, etc.).
 - **The only exit ramps are**: the issue lands a PR in `In Review` (success); the work is genuinely blocked by a missing required external secret/permission (record the blocker in the workpad, move to `In Review` with the blocker brief — see "Blocked-access escape hatch"); or the ticket is in a state this workflow says to ignore.
+
+## Hard prohibition: NEVER merge to main / default branch
+
+Merging is **100% a human responsibility**. The agent's job ends at PR
+opened in `In Review`. Under no circumstances may the agent:
+
+- Run `gh pr merge`, `gh pr merge --auto`, `gh pr merge --squash`,
+  `gh pr merge --rebase`, or any variant.
+- Run `git push origin main`, `git push origin HEAD:main`,
+  `git push --force origin main`, or push to any default base branch
+  configured in `repositories.default_base_branch` (default: `main`).
+- Run `git checkout main && git merge feat/X` followed by a push to
+  origin main.
+- Use the `mcp__github__merge_pull_request` MCP tool, or any other tool
+  whose effect is to land a PR.
+- Click "Merge" via any browser/automation surface.
+- Bypass branch protection by deleting protection rules, by inviting
+  itself as an admin, or by running `gh api` mutations against `main`.
+
+If a Linear ticket asks the agent to merge or land a PR, treat it as a
+blocked task: leave the PR in `In Review`, add a workpad note
+explaining that merging is not in the agent's authority, and stop.
+
+This rule has zero exceptions. Branch protection on `main` is also
+enforced server-side at the GitHub level, and the workspace ships with
+a `pre-push` git hook that refuses pushes to `main`. Working around
+those defenses is itself a violation of this rule.
 
 ## Repository conventions
 

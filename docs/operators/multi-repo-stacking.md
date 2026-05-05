@@ -14,6 +14,7 @@ dependency-aware PR stacking enabled. For the architecture, read
 - [Operator log keys](#operator-log-keys)
 - [Troubleshooting](#troubleshooting)
 - [Manual recovery](#manual-recovery)
+- [Hard rule: agents never merge to main](#hard-rule-agents-never-merge-to-main)
 - [Post-deploy mediation (auto-rebase downstream PRs)](#post-deploy-mediation-auto-rebase-downstream-prs)
 - [Feedback loop (auto-rework on Linear comments)](#feedback-loop-auto-rework-on-linear-comments)
 - [Optional: Langfuse tracing](#optional-langfuse-tracing)
@@ -119,6 +120,28 @@ For each repository configured in `repositories.paths`:
    `gh auth login`. The CLI must be able to push to the repo and edit PRs.
 3. Add a `linear-agent` PR label (or whatever you use as your tag).
    Symphony stamps every PR it opens with this label.
+4. **Protect the default branch.** This is the server-side guarantee
+   that agents can never merge to `main` themselves. Settings →
+   Branches → Add branch protection rule for `main`:
+   - Require a pull request before merging.
+   - Require approvals (≥1).
+   - Disallow force pushes.
+   - Disallow deletions.
+   - Optionally: require status checks to pass.
+   Symphony's prompt and code-side guards prevent the agent from
+   *attempting* a merge; branch protection prevents it from
+   succeeding even if the prompt and guards are bypassed.
+
+   Equivalent via API:
+
+   ```sh
+   gh api -X PUT \
+     repos/<owner>/<repo>/branches/main/protection \
+     -f required_pull_request_reviews[required_approving_review_count]=1 \
+     -F enforce_admins=true \
+     -F allow_force_pushes=false \
+     -F allow_deletions=false
+   ```
 
 ## Linear setup
 
@@ -246,6 +269,36 @@ Symphony creates a fresh worktree on the next dispatch.
 `mix symphony.diagnose <id>` shows the current state. Combine with
 deleting the integration branch (above) to force a clean rebuild on the
 next tick.
+
+## Hard rule: agents never merge to main
+
+Merging is **100% a human responsibility**. Four layers enforce this:
+
+1. **Prompt** — `WORKFLOW.md` includes a hard-prohibition section that
+   names the forbidden commands explicitly (`gh pr merge`,
+   `git push origin main`, `mcp__github__merge_pull_request`, …) and
+   tells the agent to treat any "please merge" Linear ticket as
+   blocked.
+2. **Code-side guards** — `Branches.Rebaser` and
+   `Branches.IntegrationBuilder` refuse with
+   `{:error, {:rejected_protected_branch, name}}` when the branch
+   they'd push to is the configured `default_base` or a known
+   protected name (`main`, `master`, `trunk`, `develop`, `production`).
+   No code path in Symphony writes to those branches.
+3. **Workspace `pre-push` hook** — `after_create` installs
+   `.git/hooks/pre-push` in every workspace clone that exits non-zero
+   on any push to `refs/heads/(main|master|trunk|develop|production)`.
+   So even if the agent invokes raw `git push origin main`, the local
+   client refuses before going over the wire.
+4. **GitHub branch protection** — server-side guarantee. Documented
+   in [GitHub setup](#github-setup) above. This is the layer that
+   matters most: the others are defense in depth so the system is
+   safe even when one layer is misconfigured.
+
+Recovery if the agent reports a protected-branch refusal: the agent's
+work is correct — it tried to do the right thing and got stopped. Land
+the PR yourself via the GitHub UI; the orchestrator picks up the merge
+on the next tick and runs post-deploy mediation for any dependents.
 
 ## Post-deploy mediation (auto-rebase downstream PRs)
 

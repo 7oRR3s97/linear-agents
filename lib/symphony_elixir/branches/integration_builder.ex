@@ -28,10 +28,23 @@ defmodule SymphonyElixir.Branches.IntegrationBuilder do
   def rebuild(repo, integration_branch_name, blocker_branches, base_branch \\ "main") do
     sorted_blockers = blocker_branches |> Enum.sort() |> Enum.uniq()
 
-    Lockbox.with_lock(repo.handle, fn ->
-      do_rebuild(repo, integration_branch_name, sorted_blockers, base_branch)
-    end)
-    |> unwrap()
+    cond do
+      MapSet.member?(protected_branches(repo, base_branch), integration_branch_name) ->
+        {:error, {:rejected_protected_branch, integration_branch_name}}
+
+      true ->
+        Lockbox.with_lock(repo.handle, fn ->
+          do_rebuild(repo, integration_branch_name, sorted_blockers, base_branch)
+        end)
+        |> unwrap()
+    end
+  end
+
+  # Refuse to push the "integration" branch to a protected base — landing
+  # on main is a human-only action.
+  defp protected_branches(repo, base_branch) do
+    base = repo[:default_base] || base_branch || "main"
+    MapSet.new([base, "main", "master", "trunk", "develop"])
   end
 
   defp do_rebuild(repo, integration_branch_name, blockers, base_branch) do

@@ -106,6 +106,18 @@ defmodule SymphonyElixir.Branches.IntegrationBuilderTest do
       assert tree_ab == tree_ba
     end
 
+    test "refuses to push to a protected base branch (main, master, trunk, develop, configured default)", %{repo: repo} do
+      for name <- ["main", "master", "trunk", "develop"] do
+        assert {:error, {:rejected_protected_branch, ^name}} =
+                 IntegrationBuilder.rebuild(repo, name, ["feat/A"])
+      end
+    end
+
+    test "refuses to push when the integration name equals the configured default_base", %{repo: repo} do
+      assert {:error, {:rejected_protected_branch, "main"}} =
+               IntegrationBuilder.rebuild(repo, "main", ["feat/A"], "main")
+    end
+
     test "leaves source clone on its original branch after a build", %{repo: repo} do
       {start_branch, 0} = System.cmd("git", ["-C", repo.path, "branch", "--show-current"])
       start_branch = String.trim(start_branch)

@@ -41,20 +41,36 @@ defmodule SymphonyElixir.Branches.Rebaser do
   def rebase_onto(repo, branch, target, opts \\ [])
       when is_binary(branch) and is_binary(target) do
     fetch? = Keyword.get(opts, :fetch, true)
+    protected = protected_branches(repo)
 
-    Lockbox.with_lock(repo.handle, fn ->
-      with :ok <- maybe_fetch(repo, fetch?),
-           :exists <- branch_status(repo, branch),
-           {:ok, build_dir} <- prepare_build_dir(repo, branch, target) do
-        result = do_rebase(repo, build_dir, branch, target)
-        cleanup_build_dir(repo, build_dir)
-        result
-      else
-        :missing -> {:noop, :branch_missing}
-        {:error, _} = err -> err
-      end
-    end)
-    |> unwrap()
+    cond do
+      MapSet.member?(protected, branch) ->
+        {:error, {:rejected_protected_branch, branch}}
+
+      true ->
+        Lockbox.with_lock(repo.handle, fn ->
+          with :ok <- maybe_fetch(repo, fetch?),
+               :exists <- branch_status(repo, branch),
+               {:ok, build_dir} <- prepare_build_dir(repo, branch, target) do
+            result = do_rebase(repo, build_dir, branch, target)
+            cleanup_build_dir(repo, build_dir)
+            result
+          else
+            :missing -> {:noop, :branch_missing}
+            {:error, _} = err -> err
+          end
+        end)
+        |> unwrap()
+    end
+  end
+
+  # Branches the orchestrator MUST NEVER push to — landing on main is
+  # 100% a human responsibility. Includes the configured default base
+  # plus the canonical names so a misconfigured `default_base` ("master",
+  # "trunk", etc.) doesn't open a hole.
+  defp protected_branches(repo) do
+    base = repo[:default_base] || "main"
+    MapSet.new([base, "main", "master", "trunk", "develop"])
   end
 
   defp maybe_fetch(_repo, false), do: :ok
