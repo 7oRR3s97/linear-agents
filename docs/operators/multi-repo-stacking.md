@@ -89,7 +89,7 @@ stacking:
 
 hooks:
   before_remove: |
-    mix workspace.before_remove
+    mise exec -- mix workspace.before_remove
 ```
 
 ### Field reference
