@@ -17,7 +17,9 @@ workspace:
 hooks:
   after_create: |
     git clone --depth 1 https://github.com/7oRR3s97/linear-agents .
-    mix deps.get
+    if command -v mise >/dev/null 2>&1; then
+      mise trust && mise exec -- mix deps.get
+    fi
     # Refuse local pushes to any protected base branch. Server-side
     # branch protection on GitHub is the belt; this is the suspenders.
     cat > .git/hooks/pre-push <<'PREPUSH'
@@ -39,7 +41,7 @@ hooks:
     PREPUSH
     chmod +x .git/hooks/pre-push
   before_remove: |
-    mix workspace.before_remove
+    mise exec -- mix workspace.before_remove
 agent:
   max_concurrent_agents: 5
   max_turns: 20

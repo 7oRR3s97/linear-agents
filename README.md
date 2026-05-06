@@ -45,9 +45,8 @@ the rewind to dependents per the design doc.
 
 ## Setup
 
-1. Have **Erlang/OTP 28** and **Elixir 1.19.x** on your `PATH`. Use whatever
-   version manager you prefer (asdf, brew, native installs, etc.) or none —
-   Symphony shells out to `mix` directly.
+1. Install [mise](https://mise.jdx.dev/) and run `mise install` from this
+   directory to provision Elixir/OTP.
 2. Install deps: `mix deps.get`.
 3. Set `LINEAR_API_KEY` (Linear → Settings → Security & access → Personal API
    keys).

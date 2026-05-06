@@ -161,7 +161,7 @@ export LANGFUSE_PUBLIC_KEY=pk-lf-symphony-local-dev
 export LANGFUSE_SECRET_KEY=<the value you set in .env>
 export LINEAR_API_KEY=<your linear personal API key>
 
-iex -S mix
+mise exec -- iex -S mix
 ```
 
 Persist them in `~/.zshrc`, a `.envrc` (direnv), or a launcher script —
