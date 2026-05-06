@@ -558,6 +558,86 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
+  describe "todo_issue_blocked_by_active_blocker_for_test/1" do
+    test "without stacking, blocker In Review still blocks (legacy)" do
+      issue = %Issue{
+        id: "x-1",
+        identifier: "MT-2001",
+        title: "Dependent",
+        state: "Todo",
+        blocked_by: [%{id: "blocker-a", identifier: "MT-2000", state: "In Review"}]
+      }
+
+      assert Orchestrator.todo_issue_blocked_by_active_blocker_for_test(issue)
+    end
+
+    test "without stacking, blocker Done unblocks" do
+      issue = %Issue{
+        id: "x-2",
+        identifier: "MT-2002",
+        title: "Dependent",
+        state: "Todo",
+        blocked_by: [%{id: "blocker-a", identifier: "MT-2000", state: "Done"}]
+      }
+
+      refute Orchestrator.todo_issue_blocked_by_active_blocker_for_test(issue)
+    end
+
+    test "with stacking on, blocker In Review (in unblock_states) unblocks the pre-filter" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        stacking: [enabled: true, unblock_states: ["In Review", "Done"]],
+        repositories: [paths: %{"web" => System.tmp_dir!()}]
+      )
+
+      issue = %Issue{
+        id: "x-3",
+        identifier: "MT-2003",
+        title: "Dependent",
+        state: "Todo",
+        blocked_by: [%{id: "blocker-a", identifier: "MT-2000", state: "In Review"}]
+      }
+
+      refute Orchestrator.todo_issue_blocked_by_active_blocker_for_test(issue)
+    end
+
+    test "with stacking on, blocker In Progress (not in unblock_states) still blocks" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        stacking: [enabled: true, unblock_states: ["In Review", "Done"]],
+        repositories: [paths: %{"web" => System.tmp_dir!()}]
+      )
+
+      issue = %Issue{
+        id: "x-4",
+        identifier: "MT-2004",
+        title: "Dependent",
+        state: "Todo",
+        blocked_by: [%{id: "blocker-a", identifier: "MT-2000", state: "In Progress"}]
+      }
+
+      assert Orchestrator.todo_issue_blocked_by_active_blocker_for_test(issue)
+    end
+
+    test "with stacking on, mixed blockers — any non-unblocking blocker still blocks" do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        stacking: [enabled: true, unblock_states: ["In Review", "Done"]],
+        repositories: [paths: %{"web" => System.tmp_dir!()}]
+      )
+
+      issue = %Issue{
+        id: "x-5",
+        identifier: "MT-2005",
+        title: "Dependent",
+        state: "Todo",
+        blocked_by: [
+          %{id: "blocker-a", identifier: "MT-2000", state: "In Review"},
+          %{id: "blocker-b", identifier: "MT-2010", state: "In Progress"}
+        ]
+      }
+
+      assert Orchestrator.todo_issue_blocked_by_active_blocker_for_test(issue)
+    end
+  end
+
   test "dispatch revalidation skips stale todo issue once a non-terminal blocker appears" do
     stale_issue = %Issue{
       id: "blocked-2",

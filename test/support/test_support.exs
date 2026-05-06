@@ -124,6 +124,8 @@ defmodule SymphonyElixir.TestSupport do
           observability_render_interval_ms: 16,
           server_port: nil,
           server_host: nil,
+          stacking: nil,
+          repositories: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -161,6 +163,8 @@ defmodule SymphonyElixir.TestSupport do
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
+    stacking = Keyword.get(config, :stacking)
+    repositories = Keyword.get(config, :repositories)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -195,6 +199,8 @@ defmodule SymphonyElixir.TestSupport do
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
+        stacking_yaml(stacking),
+        repositories_yaml(repositories),
         "---",
         prompt
       ]
@@ -287,4 +293,51 @@ defmodule SymphonyElixir.TestSupport do
 
     "  #{name}: |\n#{indented}"
   end
+
+  defp stacking_yaml(nil), do: nil
+
+  defp stacking_yaml(opts) when is_list(opts) or is_map(opts) do
+    enabled = fetch_opt(opts, :enabled, false)
+    branch_template = fetch_opt(opts, :branch_template, "{{ issue.branchName }}")
+
+    integration_branch_template =
+      fetch_opt(opts, :integration_branch_template, "symphony/integration/{{ issue.identifier | downcase }}")
+
+    unblock_states = fetch_opt(opts, :unblock_states, ["In Review", "Done"])
+    rework_state = fetch_opt(opts, :rework_state, "Todo")
+
+    [
+      "stacking:",
+      "  enabled: #{yaml_value(enabled)}",
+      "  branch_template: #{yaml_value(branch_template)}",
+      "  integration_branch_template: #{yaml_value(integration_branch_template)}",
+      "  unblock_states: #{yaml_value(unblock_states)}",
+      "  rework_state: #{yaml_value(rework_state)}"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp repositories_yaml(nil), do: nil
+
+  defp repositories_yaml(opts) when is_list(opts) or is_map(opts) do
+    default = fetch_opt(opts, :default, nil)
+    by_label = fetch_opt(opts, :by_label, %{})
+    paths = fetch_opt(opts, :paths, %{})
+    remote = fetch_opt(opts, :remote, "origin")
+    default_base_branch = fetch_opt(opts, :default_base_branch, "main")
+
+    [
+      "repositories:",
+      default && "  default: #{yaml_value(default)}",
+      "  by_label: #{yaml_value(by_label)}",
+      "  paths: #{yaml_value(paths)}",
+      "  remote: #{yaml_value(remote)}",
+      "  default_base_branch: #{yaml_value(default_base_branch)}"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp fetch_opt(opts, key, default) when is_list(opts), do: Keyword.get(opts, key, default)
+  defp fetch_opt(opts, key, default) when is_map(opts), do: Map.get(opts, key, default)
 end
