@@ -114,10 +114,15 @@ defmodule Mix.Tasks.Symphony.Diagnose do
     end
   end
 
-  defp parse_slug(url) do
+  # Accepts the standard `github.com` host as well as `~/.ssh/config`
+  # aliases like `github.com-work` so multi-account setups still resolve
+  # the `owner/repo` slug from `git remote get-url origin`.
+  @doc false
+  @spec parse_slug(String.t()) :: String.t() | nil
+  def parse_slug(url) do
     cond do
-      Regex.match?(~r{github\.com[/:]([^/]+)/([^/.]+)(?:\.git)?$}, url) ->
-        case Regex.run(~r{github\.com[/:]([^/]+)/([^/.]+?)(?:\.git)?$}, url) do
+      Regex.match?(~r{github\.com[\w.-]*[/:]([^/]+)/([^/.]+)(?:\.git)?$}, url) ->
+        case Regex.run(~r{github\.com[\w.-]*[/:]([^/]+)/([^/.]+?)(?:\.git)?$}, url) do
           [_, owner, name] -> "#{owner}/#{name}"
           _ -> nil
         end

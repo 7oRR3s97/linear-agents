@@ -1,8 +1,31 @@
 defmodule SymphonyElixir.DiagnoseTest do
   use ExUnit.Case, async: true
 
+  alias Mix.Tasks.Symphony.Diagnose, as: DiagnoseTask
   alias SymphonyElixir.Diagnose
   alias SymphonyElixir.Linear.Issue
+
+  describe "parse_slug/1" do
+    test "matches HTTPS github.com URLs" do
+      assert "owner/repo" == DiagnoseTask.parse_slug("https://github.com/owner/repo.git")
+      assert "owner/repo" == DiagnoseTask.parse_slug("https://github.com/owner/repo")
+    end
+
+    test "matches SSH github.com URLs" do
+      assert "owner/repo" == DiagnoseTask.parse_slug("git@github.com:owner/repo.git")
+    end
+
+    test "matches SSH github.com aliases used via ~/.ssh/config (e.g. github.com-work)" do
+      assert "owner/repo" == DiagnoseTask.parse_slug("git@github.com-work:owner/repo.git")
+      assert "OlaIsaac/rf-monorepo" == DiagnoseTask.parse_slug("git@github.com-work:OlaIsaac/rf-monorepo.git")
+      assert "owner/repo" == DiagnoseTask.parse_slug("git@github.com.local:owner/repo.git")
+    end
+
+    test "returns nil for unrelated URLs" do
+      assert is_nil(DiagnoseTask.parse_slug("https://gitlab.com/owner/repo.git"))
+      assert is_nil(DiagnoseTask.parse_slug(""))
+    end
+  end
 
   test "renders a full report for a 2-blocker issue with PR open" do
     issue = %Issue{
