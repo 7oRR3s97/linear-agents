@@ -41,7 +41,12 @@ defmodule SymphonyElixir.Workspace do
            branch_name when is_binary(branch_name) and branch_name != "" <-
              Keyword.get(opts, :branch_name, issue.branch_name) do
         base_ref = Keyword.get(opts, :base_ref, repo.default_base)
-        workspace_root = settings.workspace.root
+        # Expand `~` for local worktree paths. The schema keeps the
+        # raw value (`~/code/...`) so remote (SSH) workers can resolve
+        # it against the remote `$HOME`; for local `git worktree add`,
+        # we need an absolute path or git treats `~` as a literal
+        # directory underneath the source repo.
+        workspace_root = expand_local_path(settings.workspace.root)
 
         case Worktree.add(repo, issue.identifier, base_ref, branch_name,
                workspace_root: workspace_root,
@@ -70,7 +75,7 @@ defmodule SymphonyElixir.Workspace do
     if stacking_enabled?(settings) do
       case resolve_repo(issue, settings) do
         {:ok, repo} ->
-          Worktree.remove(repo, issue.identifier, workspace_root: settings.workspace.root)
+          Worktree.remove(repo, issue.identifier, workspace_root: expand_local_path(settings.workspace.root))
 
         {:error, reason} ->
           {:error, reason}
@@ -79,6 +84,9 @@ defmodule SymphonyElixir.Workspace do
       remove_issue_workspaces(issue.identifier)
     end
   end
+
+  defp expand_local_path("~" <> _ = value), do: Path.expand(value)
+  defp expand_local_path(value), do: value
 
   defp stacking_enabled?(settings) do
     case settings.stacking do
