@@ -30,7 +30,7 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case Workspace.create_for_issue(issue, worker_host) do
+    case create_dispatch_workspace(issue, worker_host) do
       {:ok, workspace} ->
         send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
 
@@ -44,6 +44,31 @@ defmodule SymphonyElixir.AgentRunner do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # When stacking is enabled and the issue runs locally, route the
+  # workspace through `Workspace.create_worktree_for_issue/1` so the
+  # `repositories.by_label` map decides which repo the worktree is added
+  # to. The legacy `create_for_issue/2` path runs an `after_create` hook
+  # that hard-codes a clone URL, so it cannot route by label and would
+  # land cross-repo issues in the orchestrator's own repo. The legacy
+  # path is preserved for non-stacking and remote (SSH) workers.
+  defp create_dispatch_workspace(issue, worker_host) do
+    if local_worker?(worker_host) and stacking_enabled?() do
+      Workspace.create_worktree_for_issue(issue)
+    else
+      Workspace.create_for_issue(issue, worker_host)
+    end
+  end
+
+  defp local_worker?(nil), do: true
+  defp local_worker?(_), do: false
+
+  defp stacking_enabled? do
+    case Config.settings() do
+      {:ok, %{stacking: %{enabled: true}}} -> true
+      _ -> false
     end
   end
 
