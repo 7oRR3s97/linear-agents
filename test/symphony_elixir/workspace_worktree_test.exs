@@ -47,6 +47,32 @@ defmodule SymphonyElixir.WorkspaceWorktreeTest do
     assert {:error, :missing_branch_name} = Workspace.create_worktree_for_issue(issue, fetch: false)
   end
 
+  test "stacking enabled: workspace.root with leading ~ is expanded for git worktree add", %{
+    source: source,
+    workflow_path: workflow_path,
+    workspace_root: ws
+  } do
+    relative_under_home = Path.relative_to(ws, System.user_home!())
+
+    cond do
+      relative_under_home == ws ->
+        # tmp dir is not under $HOME — skip rather than break the assumption.
+        :ok
+
+      true ->
+        write_workflow!(workflow_path, source, "~/" <> relative_under_home, true)
+        if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
+
+        issue = %Issue{identifier: "PES-EXPAND", labels: ["repo:src", "AFK"], branch_name: "feat/expand"}
+
+        assert {:ok, path} = Workspace.create_worktree_for_issue(issue, fetch: false)
+
+        refute path =~ ~r{/~/}
+        assert String.starts_with?(path, Path.expand(ws))
+        assert File.exists?(Path.join(path, ".git"))
+    end
+  end
+
   test "stacking enabled: removes only the worktree, not the source clone", %{
     source: source
   } do
