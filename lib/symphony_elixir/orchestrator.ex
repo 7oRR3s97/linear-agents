@@ -315,6 +315,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec todo_issue_blocked_by_active_blocker_for_test(Issue.t()) :: boolean()
+  def todo_issue_blocked_by_active_blocker_for_test(%Issue{} = issue) do
+    todo_issue_blocked_by_active_blocker?(issue, terminal_state_set())
+  end
+
+  @doc false
   @spec revalidate_issue_for_dispatch_for_test(Issue.t(), ([String.t()] -> term())) ::
           {:ok, Issue.t()} | {:skip, Issue.t() | :missing} | {:error, term()}
   def revalidate_issue_for_dispatch_for_test(%Issue{} = issue, issue_fetcher)
@@ -559,7 +565,7 @@ defmodule SymphonyElixir.Orchestrator do
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
-      !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+      !todo_issue_blocked_by_active_blocker?(issue, terminal_states) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
@@ -698,6 +704,39 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp todo_issue_blocked_by_non_terminal?(_issue, _terminal_states), do: false
+
+  # Pre-filter for the dispatch loop. When stacking is enabled, blockers
+  # in `unblock_states` (typically `In Review`/`Done`) are treated as
+  # *not* still-blocking — the agent only opens a PR (and transitions the
+  # blocker to `In Review`) once its own work is complete, so dependents
+  # may begin and stack their PR onto the blocker's branch.
+  # `DispatchGuard` then makes the final call (branch must exist, etc.).
+  # When stacking is disabled, only `terminal_states` count as unblocking
+  # (legacy behavior).
+  defp todo_issue_blocked_by_active_blocker?(%Issue{} = issue, terminal_states) do
+    todo_issue_blocked_by_non_terminal?(issue, effective_unblocking_state_set(terminal_states))
+  end
+
+  defp todo_issue_blocked_by_active_blocker?(_issue, _terminal_states), do: false
+
+  defp effective_unblocking_state_set(terminal_states) do
+    case Config.settings() do
+      {:ok, %{stacking: %{enabled: true} = stacking}} ->
+        MapSet.union(terminal_states, normalize_unblock_state_set(Map.get(stacking, :unblock_states)))
+
+      _ ->
+        terminal_states
+    end
+  end
+
+  defp normalize_unblock_state_set(states) when is_list(states) do
+    states
+    |> Enum.map(&normalize_issue_state/1)
+    |> Enum.filter(&(&1 != ""))
+    |> MapSet.new()
+  end
+
+  defp normalize_unblock_state_set(_), do: MapSet.new()
 
   defp terminal_issue_state?(state_name, terminal_states) when is_binary(state_name) do
     MapSet.member?(terminal_states, normalize_issue_state(state_name))
@@ -1375,7 +1414,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do
     candidate_issue?(issue, active_state_set(), terminal_states) and
-      !todo_issue_blocked_by_non_terminal?(issue, terminal_states)
+      !todo_issue_blocked_by_active_blocker?(issue, terminal_states)
   end
 
   defp dispatch_slots_available?(%Issue{} = issue, %State{} = state) do
