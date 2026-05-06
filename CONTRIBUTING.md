@@ -41,9 +41,10 @@ welcome:
 1. Fork + branch off `main`. Branch naming: `<your-handle>/<short-slug>`
    is fine; the orchestrator uses `enggabrieltorres/pes-NNN-…` but that
    prefix is just Linear's `branchName` field — feel free to ignore.
-2. Run the full suite locally: `mise install && mix deps.get && mix test`.
-   The tree should be at 391/391 passing (modulo two pre-existing
-   flakes in `core_test.exs` and `workspace_and_config_test.exs`).
+2. Run the full suite locally: `mix deps.get && mix test`. The tree
+   should be green (modulo two pre-existing flakes in `core_test.exs`
+   and `workspace_and_config_test.exs`). Use any Elixir version
+   manager — Erlang/OTP 28 + Elixir 1.19.x is the supported pair.
 3. New Elixir code needs `@spec` typespecs (see `mix specs.check`).
 4. Open the PR against `main`. Squash-and-merge is the default.
 

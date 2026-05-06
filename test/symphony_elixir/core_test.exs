@@ -106,9 +106,8 @@ defmodule SymphonyElixir.CoreTest do
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
     assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/7oRR3s97/linear-agents ."
-    assert Map.get(hooks, "after_create") =~ "mise trust"
-    assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
-    assert Map.get(hooks, "before_remove") =~ "mise exec -- mix workspace.before_remove"
+    assert Map.get(hooks, "after_create") =~ "mix deps.get"
+    assert Map.get(hooks, "before_remove") =~ "mix workspace.before_remove"
 
     assert String.trim(prompt) != ""
     assert is_binary(Config.workflow_prompt())

@@ -4,7 +4,7 @@ This directory contains the Elixir agent orchestration service that polls Linear
 
 ## Environment
 
-- Elixir: `1.19.x` (OTP 28) via `mise`.
+- Elixir: `1.19.x` (OTP 28) — install however you prefer.
 - Install deps: `mix setup`.
 - Main quality gate: `make all` (format check, lint, coverage, dialyzer).
 
