@@ -25,20 +25,80 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
   # alias SymphonyElixir.FakeHuman
   alias SymphonyElixir.Forge.GitHubStub
   alias SymphonyElixir.GitFixture
-  # alias SymphonyElixir.Linear.Client
-  # alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.Linear.Issue
   # alias SymphonyElixir.MockAgent
 
   @moduletag :live_stacking_e2e
   @moduletag :tmp_dir
   @moduletag timeout: 300_000
 
-  # @default_team_key reused once Linear provisioning lands in Task 2.5.
-  # @default_team_key "SYME2E"
+  @default_team_key "SYME2E"
   @gh_slug "acme/src"
 
   @skip_reason if(System.get_env("SYMPHONY_RUN_LIVE_STACKING_E2E") != "1",
                   do: "set SYMPHONY_RUN_LIVE_STACKING_E2E=1 to enable live Linear + local-Git stacking e2e")
+
+  @team_query """
+  query StackingE2ETeam($key: String!) {
+    teams(filter: {key: {eq: $key}}, first: 1) {
+      nodes {
+        id
+        key
+        states(first: 50) { nodes { id name type } }
+      }
+    }
+  }
+  """
+
+  @create_project_mutation """
+  mutation StackingE2ECreateProject($name: String!, $teamIds: [String!]!) {
+    projectCreate(input: {name: $name, teamIds: $teamIds}) {
+      success
+      project { id name slugId url }
+    }
+  }
+  """
+
+  @create_issue_mutation """
+  mutation StackingE2ECreateIssue(
+    $teamId: String!, $projectId: String!, $title: String!,
+    $description: String!, $stateId: String, $labelIds: [String!]) {
+    issueCreate(input: {
+      teamId: $teamId, projectId: $projectId, title: $title,
+      description: $description, stateId: $stateId, labelIds: $labelIds
+    }) {
+      success
+      issue { id identifier title url state { name } branchName }
+    }
+  }
+  """
+
+  @issue_relation_mutation """
+  mutation StackingE2ECreateRelation($issueId: String!, $relatedIssueId: String!) {
+    issueRelationCreate(input: {issueId: $issueId, relatedIssueId: $relatedIssueId, type: blocks}) {
+      success
+    }
+  }
+  """
+
+  @project_statuses_query """
+  query StackingE2EProjectStatuses {
+    projectStatuses(first: 50) { nodes { id name type } }
+  }
+  """
+
+  @complete_project_mutation """
+  mutation StackingE2ECompleteProject($id: String!, $statusId: String!, $completedAt: DateTime!) {
+    projectUpdate(id: $id, input: {statusId: $statusId, completedAt: $completedAt}) { success }
+  }
+  """
+
+  @issue_state_query """
+  query StackingE2EIssueState($id: String!) {
+    issue(id: $id) { id state { name type } }
+  }
+  """
 
   setup %{tmp_dir: tmp} do
     if @skip_reason, do: :ok, else: setup_live(tmp)
@@ -61,26 +121,169 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
       default_base: "main"
     }
 
+    team = fetch_team!()
+    todo_state = pick_state!(team, "unstarted")
+    in_review_state = pick_state!(team, "started")
+    done_state = pick_state!(team, "completed")
+    completed_project_status_id = completed_project_status_id!()
+
+    project_name = "Symphony Stacking E2E #{System.unique_integer([:positive])}"
+    project = create_project!(team["id"], project_name)
+
+    a = create_issue!(team["id"], project["id"], todo_state["id"], "stacking-e2e A", "feat/stacking-a")
+    b = create_issue!(team["id"], project["id"], todo_state["id"], "stacking-e2e B", "feat/stacking-b")
+    x = create_issue!(team["id"], project["id"], todo_state["id"], "stacking-e2e X", "feat/stacking-x")
+    y = create_issue!(team["id"], project["id"], todo_state["id"], "stacking-e2e Y", "feat/stacking-y")
+
+    :ok = link_blocker!(x.id, a.id)
+    :ok = link_blocker!(x.id, b.id)
+    :ok = link_blocker!(y.id, a.id)
+
+    x = %{
+      x
+      | blocked_by: [
+          %{id: a.id, identifier: a.identifier, state: "Todo"},
+          %{id: b.id, identifier: b.identifier, state: "Todo"}
+        ]
+    }
+
+    y = %{y | blocked_by: [%{id: a.id, identifier: a.identifier, state: "Todo"}]}
+
+    E2EManifest.append!(manifest_path, %{
+      event: "setup",
+      linear: %{
+        team_id: team["id"],
+        team_key: team["key"],
+        project_id: project["id"],
+        project_url: project["url"]
+      },
+      issues: %{
+        a: %{id: a.id, identifier: a.identifier, url: a.url},
+        b: %{id: b.id, identifier: b.identifier, url: b.url},
+        x: %{id: x.id, identifier: x.identifier, url: x.url},
+        y: %{id: y.id, identifier: y.identifier, url: y.url}
+      },
+      repo: %{bare_path: repo.bare_path, work_path: repo.path}
+    })
+
     on_exit(fn ->
       cleanup_stub.()
+      complete_project_safe(project["id"], completed_project_status_id)
       Logger.info("LIVE_STACKING_E2E manifest: #{manifest_path}")
     end)
 
-    {:ok, tmp: tmp, manifest_path: manifest_path, repo: repo}
+    {:ok,
+     tmp: tmp,
+     manifest_path: manifest_path,
+     repo: repo,
+     issues: %{a: a, b: b, x: x, y: y},
+     state_ids: %{todo: todo_state["id"], in_review: in_review_state["id"], done: done_state["id"]}}
   end
 
   @tag skip: @skip_reason
   test "live stacking pipeline against real Linear and local Git", %{
-    tmp: tmp,
     manifest_path: manifest_path,
-    repo: repo
+    repo: repo,
+    issues: issues,
+    state_ids: _state_ids
   } do
-    # This skeleton just confirms setup runs. Scenarios A–E land in subsequent tasks.
-    assert is_binary(manifest_path)
     assert File.exists?(manifest_path)
     assert File.exists?(repo.path)
-    assert File.exists?(repo.bare_path)
-    _ = tmp
+
+    for {key, issue} <- issues do
+      assert is_binary(issue.id), "expected #{key} to have a Linear id"
+      assert issue.identifier =~ ~r/[A-Z]+-\d+/
+    end
+
+    [setup_event | _] = E2EManifest.read!(manifest_path)
+    assert setup_event["event"] == "setup"
+  end
+
+  defp graphql!(query, vars \\ %{}) do
+    case Client.graphql(query, vars) do
+      {:ok, %{"data" => data}} when is_map(data) -> data
+      {:ok, payload} -> flunk("Linear graphql unexpected payload: #{inspect(payload)}")
+      {:error, reason} -> flunk("Linear graphql error: #{inspect(reason)}")
+    end
+  end
+
+  defp fetch_team! do
+    key = System.get_env("SYMPHONY_LIVE_LINEAR_TEAM_KEY") || @default_team_key
+    nodes = graphql!(@team_query, %{key: key}) |> get_in(["teams", "nodes"]) || []
+
+    case nodes do
+      [team | _] -> team
+      [] -> flunk("Linear team #{inspect(key)} not found. Create it or set SYMPHONY_LIVE_LINEAR_TEAM_KEY.")
+    end
+  end
+
+  defp pick_state!(team, type) do
+    states = team["states"]["nodes"] || []
+
+    case Enum.find(states, &(&1["type"] == type)) do
+      %{} = state -> state
+      nil -> flunk("Team #{team["key"]} has no state of type #{inspect(type)}; needed for live e2e.")
+    end
+  end
+
+  defp create_project!(team_id, name) do
+    data = graphql!(@create_project_mutation, %{teamIds: [team_id], name: name})
+    %{"projectCreate" => %{"success" => true, "project" => project}} = data
+    project
+  end
+
+  defp create_issue!(team_id, project_id, state_id, title, branch_name) do
+    data =
+      graphql!(@create_issue_mutation, %{
+        teamId: team_id,
+        projectId: project_id,
+        title: title,
+        description: "Live stacking e2e: #{title}",
+        stateId: state_id,
+        labelIds: []
+      })
+
+    %{"issueCreate" => %{"success" => true, "issue" => issue}} = data
+
+    %Issue{
+      id: issue["id"],
+      identifier: issue["identifier"],
+      title: issue["title"],
+      url: issue["url"],
+      branch_name: branch_name,
+      state: get_in(issue, ["state", "name"]),
+      labels: ["repo:src", "AFK"],
+      blocked_by: []
+    }
+  end
+
+  defp link_blocker!(dependent_id, blocker_id) do
+    data = graphql!(@issue_relation_mutation, %{issueId: dependent_id, relatedIssueId: blocker_id})
+    %{"issueRelationCreate" => %{"success" => true}} = data
     :ok
+  end
+
+  defp completed_project_status_id! do
+    nodes = graphql!(@project_statuses_query) |> get_in(["projectStatuses", "nodes"]) || []
+    %{"id" => id} = Enum.find(nodes, &(&1["type"] == "completed")) || flunk("no completed project status")
+    id
+  end
+
+  defp issue_state_type!(issue_id) do
+    data = graphql!(@issue_state_query, %{id: issue_id})
+    get_in(data, ["issue", "state", "type"])
+  end
+
+  defp complete_project_safe(project_id, status_id) do
+    iso = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+    case Client.graphql(@complete_project_mutation, %{
+           id: project_id,
+           statusId: status_id,
+           completedAt: iso
+         }) do
+      {:ok, _} -> :ok
+      {:error, reason} -> Logger.warning("project complete failed: #{inspect(reason)}")
+    end
   end
 end
