@@ -22,7 +22,7 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
   alias SymphonyElixir.Branches.BaseResolver
   alias SymphonyElixir.Branches.Reconciler
   # alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder}
-  # alias SymphonyElixir.Deps.Cascade
+  alias SymphonyElixir.Deps.Cascade
   alias SymphonyElixir.E2EManifest
   alias SymphonyElixir.FakeHuman
   alias SymphonyElixir.Forge.GitHubStub
@@ -242,6 +242,50 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
 
     retarget_calls = GitHubStub.calls(:retarget_pr)
     assert Enum.any?(retarget_calls, &match?({:retarget_pr, {_, _, "main"}}, &1))
+
+    # ---- Scenario C: cascade rewind ----
+    FakeHuman.rewind!(issues.a, state_ids.todo, manifest_path: manifest_path)
+
+    a_rewound = %{issues.a | state: "Todo"}
+
+    y_in_review_after_rewind = %{
+      y_in_review
+      | blocked_by: [%{id: issues.a.id, identifier: issues.a.identifier, state: "Todo"}]
+    }
+
+    # Tick 1: prime previous-state cache (A was Done before).
+    {:ok, _} = Reconciler.run([y_in_review], [a_done], cfg)
+
+    # Tick 2: A is now Todo → cascade event for Y.
+    {:ok, e2} = Reconciler.run([y_in_review_after_rewind], [a_rewound], cfg)
+    assert {:cascade_pending, _y_id, _a_id} = Enum.find(e2, &match?({:cascade_pending, _, _}, &1))
+
+    cascades = Reconciler.drain_cascades()
+
+    issues_by_id = %{issues.y.id => y_in_review_after_rewind, issues.a.id => a_rewound}
+
+    parent = self()
+
+    apply_fn = fn identifier, _new_state ->
+      send(parent, {:linear_state, identifier, "Todo"})
+
+      issue = if identifier == issues.y.identifier, do: issues.y, else: nil
+
+      if issue, do: FakeHuman.rewind!(issue, state_ids.todo, manifest_path: manifest_path)
+
+      :ok
+    end
+
+    comment_fn = fn _identifier, _body -> :ok end
+    lookup = fn id -> Map.fetch(issues_by_id, id) end
+
+    decisions = Cascade.apply_cascades(cascades, lookup, apply_fn, comment_fn)
+    assert Enum.any?(decisions, &match?({:rewind, _, _}, &1))
+
+    assert_receive {:linear_state, _, "Todo"}, 5_000
+
+    # Verify Linear actually has Y in an unstarted state now.
+    assert issue_state_type!(issues.y.id) == "unstarted"
   end
 
   defp settings(repo) do
