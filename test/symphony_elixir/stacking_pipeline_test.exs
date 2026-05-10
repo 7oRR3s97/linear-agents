@@ -19,6 +19,7 @@ defmodule SymphonyElixir.StackingPipelineTest do
   alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder, Rebaser, Reconciler}
   alias SymphonyElixir.Branches.BaseResolver
   alias SymphonyElixir.Deps.{Cascade, DispatchGuard}
+  alias SymphonyElixir.Feedback.Detector
   alias SymphonyElixir.Forge.GitHubStub
   alias SymphonyElixir.GitFixture
   alias SymphonyElixir.Linear.Issue
@@ -333,6 +334,77 @@ defmodule SymphonyElixir.StackingPipelineTest do
       result = Rebaser.rebase_onto(repo, "feat/x", "main", fetch: false)
 
       assert match?({:error, {:push_failed, _code, _output}}, result)
+    end
+  end
+
+  describe "scenario: feedback loop" do
+    test "non-workpad comment newer than workpad → Detector returns {:feedback, [...]}" do
+      workpad_at = ~U[2026-05-09 10:00:00Z]
+      feedback_at = ~U[2026-05-09 10:30:00Z]
+
+      workpad = %{
+        id: "c1",
+        body: "## Agent Workpad\nturn 1 done",
+        created_at: workpad_at,
+        updated_at: workpad_at,
+        user_id: "agent",
+        user_name: "agent"
+      }
+
+      feedback = %{
+        id: "c2",
+        body: "fix the regex on line 42 — empty inputs explode",
+        created_at: feedback_at,
+        updated_at: feedback_at,
+        user_id: "human",
+        user_name: "Reviewer"
+      }
+
+      issue = %Issue{
+        id: "id-X",
+        identifier: "PES-X",
+        labels: ["repo:src", "AFK"],
+        branch_name: "feat/x",
+        state: "In Review",
+        comments: [workpad, feedback]
+      }
+
+      assert {:feedback, [%{body: body}]} = Detector.evaluate(issue)
+      assert body =~ "regex on line 42"
+    end
+
+    test "no comments newer than workpad → :no_feedback" do
+      workpad_at = ~U[2026-05-09 10:00:00Z]
+      older_at = ~U[2026-05-09 09:00:00Z]
+
+      workpad = %{
+        id: "c1",
+        body: "## Agent Workpad\nturn 1 done",
+        created_at: workpad_at,
+        updated_at: workpad_at,
+        user_id: "agent",
+        user_name: "agent"
+      }
+
+      older = %{
+        id: "c0",
+        body: "kickoff",
+        created_at: older_at,
+        updated_at: older_at,
+        user_id: "human",
+        user_name: "Reviewer"
+      }
+
+      issue = %Issue{
+        id: "id-X",
+        identifier: "PES-X",
+        labels: ["repo:src", "AFK"],
+        branch_name: "feat/x",
+        state: "In Review",
+        comments: [older, workpad]
+      }
+
+      assert :no_feedback = Detector.evaluate(issue)
     end
   end
 
