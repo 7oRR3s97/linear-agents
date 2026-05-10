@@ -19,12 +19,11 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
   # Aliases below are commented out in this skeleton (Task 2.4) to keep
   # `--warnings-as-errors` clean. Subsequent tasks (2.5+) re-enable them as
   # the scenarios that use each module land.
-  alias SymphonyElixir.Branches.BaseResolver
-  alias SymphonyElixir.Branches.Reconciler
-  alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder}
+  alias SymphonyElixir.Branches.{BaseResolver, ConflictFallback, IntegrationBuilder, Reconciler}
   alias SymphonyElixir.Deps.Cascade
   alias SymphonyElixir.E2EManifest
   alias SymphonyElixir.FakeHuman
+  alias SymphonyElixir.Feedback.Detector
   alias SymphonyElixir.Forge.GitHubStub
   alias SymphonyElixir.GitFixture
   alias SymphonyElixir.Linear.Client
@@ -331,8 +330,7 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
 
     y_with_comments = %{issues.y | state: "In Review", comments: comments}
 
-    assert {:feedback, [_ | _] = feedback} =
-             SymphonyElixir.Feedback.Detector.evaluate(y_with_comments)
+    assert {:feedback, [_ | _] = feedback} = Detector.evaluate(y_with_comments)
 
     assert Enum.any?(feedback, &(&1.body =~ "regex"))
 
