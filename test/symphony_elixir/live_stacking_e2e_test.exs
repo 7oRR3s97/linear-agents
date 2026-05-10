@@ -286,6 +286,58 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
 
     # Verify Linear actually has Y in an unstarted state now.
     assert issue_state_type!(issues.y.id) == "unstarted"
+
+    # ---- Scenario D: feedback loop ----
+    FakeHuman.rewind!(issues.a, state_ids.in_review, manifest_path: manifest_path)
+    FakeHuman.merge!(issues.a, repo,
+      terminal_state_id: state_ids.done,
+      manifest_path: manifest_path
+    )
+
+    _y_redispatch =
+      MockAgent.dispatch!(issues.y, "main", repo,
+        in_review_state_id: state_ids.in_review,
+        manifest_path: manifest_path
+      )
+
+    FakeHuman.request_changes!(issues.y, "fix the regex on line 42 — empty inputs explode",
+      manifest_path: manifest_path
+    )
+
+    fresh_comments_query = """
+    query FreshComments($id: String!) {
+      issue(id: $id) {
+        comments(first: 50) {
+          nodes { id body createdAt updatedAt user { id name displayName } }
+        }
+      }
+    }
+    """
+
+    data = graphql!(fresh_comments_query, %{id: issues.y.id})
+    comments_raw = get_in(data, ["issue", "comments", "nodes"]) || []
+
+    comments =
+      Enum.map(comments_raw, fn c ->
+        %{
+          id: c["id"],
+          body: c["body"],
+          created_at: parse_iso(c["createdAt"]),
+          updated_at: parse_iso(c["updatedAt"]),
+          user_id: get_in(c, ["user", "id"]),
+          user_name: get_in(c, ["user", "name"]) || get_in(c, ["user", "displayName"])
+        }
+      end)
+
+    y_with_comments = %{issues.y | state: "In Review", comments: comments}
+
+    assert {:feedback, [_ | _] = feedback} =
+             SymphonyElixir.Feedback.Detector.evaluate(y_with_comments)
+
+    assert Enum.any?(feedback, &(&1.body =~ "regex"))
+
+    FakeHuman.rewind!(issues.y, state_ids.todo, manifest_path: manifest_path)
+    assert issue_state_type!(issues.y.id) == "unstarted"
   end
 
   defp settings(repo) do
@@ -397,6 +449,15 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
          }) do
       {:ok, _} -> :ok
       {:error, reason} -> Logger.warning("project complete failed: #{inspect(reason)}")
+    end
+  end
+
+  defp parse_iso(nil), do: nil
+
+  defp parse_iso(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _offset} -> dt
+      _ -> nil
     end
   end
 end
