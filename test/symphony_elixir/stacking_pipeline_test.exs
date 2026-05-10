@@ -16,9 +16,10 @@ defmodule SymphonyElixir.StackingPipelineTest do
 
   use ExUnit.Case, async: false
 
-  alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder, Reconciler}
+  alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder, Rebaser, Reconciler}
   alias SymphonyElixir.Branches.BaseResolver
   alias SymphonyElixir.Deps.{Cascade, DispatchGuard}
+  alias SymphonyElixir.Feedback.Detector
   alias SymphonyElixir.Forge.GitHubStub
   alias SymphonyElixir.GitFixture
   alias SymphonyElixir.Linear.Issue
@@ -136,6 +137,56 @@ defmodule SymphonyElixir.StackingPipelineTest do
       {_out, 0} =
         System.cmd("git", ["-C", bare, "rev-parse", "symphony/integration/pes-x"], stderr_to_stdout: true)
     end
+
+    test "three blockers → integration; one merges → still integration over two; second merges → single_blocker", %{tmp: tmp} do
+      {repo, bare} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "A\n")
+      push_branch(repo.path, "feat/B", "b.txt", "B\n")
+      push_branch(repo.path, "feat/C", "c.txt", "C\n")
+
+      a_in_review = blocker_issue("PES-A", "src", "feat/A", "id-A", "In Review")
+      b_in_review = blocker_issue("PES-B", "src", "feat/B", "id-B", "In Review")
+      c_in_review = blocker_issue("PES-C", "src", "feat/C", "id-C", "In Review")
+
+      x =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          blocked_by: [
+            %{id: "id-A", identifier: "PES-A", state: "In Review"},
+            %{id: "id-B", identifier: "PES-B", state: "In Review"},
+            %{id: "id-C", identifier: "PES-C", state: "In Review"}
+          ]
+        )
+
+      cfg = settings_with_paths(%{"src" => repo.path})
+
+      # All three In Review → integration over [A, B, C].
+      assert {:ok, {:integration, "symphony/integration/pes-x"}} =
+               BaseResolver.resolve(x, [a_in_review, b_in_review, c_in_review], cfg)
+
+      assert {:ok, _sha} =
+               IntegrationBuilder.rebuild(repo, "symphony/integration/pes-x", ["feat/A", "feat/B", "feat/C"])
+
+      {_out, 0} =
+        System.cmd("git", ["-C", bare, "rev-parse", "symphony/integration/pes-x"], stderr_to_stdout: true)
+
+      # B reaches Done → still integration, but only over A and C.
+      b_done = %{b_in_review | state: "Done"}
+
+      active_after_b = Enum.reject([a_in_review, b_done, c_in_review], &(&1.state == "Done"))
+
+      assert {:ok, {:integration, "symphony/integration/pes-x"}} =
+               BaseResolver.resolve(x, active_after_b, cfg)
+
+      assert {:ok, _sha} =
+               IntegrationBuilder.rebuild(repo, "symphony/integration/pes-x", ["feat/A", "feat/C"])
+
+      # C reaches Done → single_blocker over A.
+      c_done = %{c_in_review | state: "Done"}
+      active_after_c = Enum.reject([a_in_review, b_done, c_done], &(&1.state == "Done"))
+
+      assert {:ok, {:single_blocker, "feat/A"}} =
+               BaseResolver.resolve(x, active_after_c, cfg)
+    end
   end
 
   describe "scenario: cascade rework" do
@@ -182,6 +233,270 @@ defmodule SymphonyElixir.StackingPipelineTest do
       assert_received {:linear_state, "PES-X", "Todo"}
       assert_received {:linear_comment, "PES-X", comment}
       assert comment =~ "PES-A returned to `Todo`"
+    end
+
+    test "A → B → C all In Review; A rewinds; ticks cascade B then C", %{tmp: tmp} do
+      {repo, _} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "A\n")
+      push_branch(repo.path, "feat/B", "b.txt", "B\n")
+      push_branch(repo.path, "feat/C", "c.txt", "C\n")
+
+      a_in_review = blocker_issue("PES-A", "src", "feat/A", "id-A", "In Review")
+      a_rewound = %{a_in_review | state: "Todo"}
+
+      b_in_review =
+        issue("PES-B", ["repo:src", "AFK"], "feat/B",
+          state: "In Review",
+          blocked_by: [%{id: "id-A", identifier: "PES-A", state: "In Review"}]
+        )
+
+      b_rewound = %{b_in_review | state: "Todo"}
+
+      c_in_review =
+        issue("PES-C", ["repo:src", "AFK"], "feat/C",
+          state: "In Review",
+          blocked_by: [%{id: "id-PES-B", identifier: "PES-B", state: "In Review"}]
+        )
+
+      cfg = settings_with_paths(%{"src" => repo.path})
+
+      # Tick 1: prime previous-state cache with everything In Review.
+      {:ok, _} = Reconciler.run([b_in_review, c_in_review], [a_in_review, b_in_review], cfg)
+
+      # Tick 2: A rewinds → cascade event for B.
+      {:ok, e2} = Reconciler.run([b_in_review, c_in_review], [a_rewound, b_in_review], cfg)
+      assert {:cascade_pending, "id-PES-B", "id-A"} in e2
+
+      # Apply cascade: B rewinds.
+      events = Reconciler.drain_cascades()
+      issues_by_id = %{"id-PES-B" => b_in_review, "id-A" => a_rewound}
+
+      lookup = fn id -> Map.fetch(issues_by_id, id) end
+      parent = self()
+
+      apply_fn = fn ident, state ->
+        send(parent, {:linear_state, ident, state})
+        :ok
+      end
+
+      comment_fn = fn ident, body ->
+        send(parent, {:linear_comment, ident, body})
+        :ok
+      end
+
+      assert [{:rewind, "PES-B", _}] = Cascade.apply_cascades(events, lookup, apply_fn, comment_fn)
+      assert_received {:linear_state, "PES-B", "Todo"}
+
+      # Tick 3: B is now Todo → cascade event for C.
+      {:ok, e3} = Reconciler.run([c_in_review], [a_rewound, b_rewound], cfg)
+      assert {:cascade_pending, "id-PES-C", "id-PES-B"} in e3
+
+      events_3 = Reconciler.drain_cascades()
+      issues_by_id_3 = %{"id-PES-C" => c_in_review, "id-PES-B" => b_rewound}
+      lookup_3 = fn id -> Map.fetch(issues_by_id_3, id) end
+
+      assert [{:rewind, "PES-C", _}] = Cascade.apply_cascades(events_3, lookup_3, apply_fn, comment_fn)
+      assert_received {:linear_state, "PES-C", "Todo"}
+    end
+  end
+
+  describe "scenario: post-deploy mediation" do
+    test "blocker reaches Done; dependent branch rebases onto main, force-push fires once", %{tmp: tmp} do
+      {repo, _bare} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "from A\n")
+
+      # Branch feat/x off feat/A so X carries A's commits.
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "-b", "feat/x"], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "x.txt", "X content\n", "x adds x.txt")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "-u", "origin", "feat/x"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "main"], stderr_to_stdout: true)
+
+      # Land A on main via cherry-pick + add an unrelated commit so feat/x is
+      # provably behind. Without the second commit, the rebase can collapse to
+      # a no-op via patch-id matching depending on test ordering.
+      {a_sha, 0} = System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "cherry-pick", String.trim(a_sha)], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "main_only.txt", "advance main\n", "advance main")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "origin", "main"], stderr_to_stdout: true)
+
+      assert {:ok, %{from: from_sha, to: to_sha}} =
+               Rebaser.rebase_onto(repo, "feat/x", "main", fetch: false)
+
+      assert byte_size(from_sha) >= 7
+      assert byte_size(to_sha) >= 7
+      assert from_sha != to_sha
+
+      # Confirm origin's feat/x now points at the rebased SHA.
+      {origin_sha, 0} =
+        System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/x"], stderr_to_stdout: true)
+
+      assert String.trim(origin_sha) |> String.starts_with?(to_sha)
+    end
+
+    test "blocker merged to main; X's branch conflicts with main on shared file → rebase aborts, origin unchanged", %{tmp: tmp} do
+      {repo, _bare} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "shared.txt", "from A\n")
+
+      # X branches off main (NOT off A) and writes the same file with conflicting content.
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "main"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "-b", "feat/x"], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "shared.txt", "from X\n", "x writes shared")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "-u", "origin", "feat/x"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "main"], stderr_to_stdout: true)
+
+      # Capture origin/feat/x's SHA before the attempt.
+      {pre_sha, 0} =
+        System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/x"], stderr_to_stdout: true)
+
+      pre_sha = String.trim(pre_sha)
+
+      # Land A's content on main (so main has shared.txt = "from A\n").
+      {a_sha, 0} = System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "cherry-pick", String.trim(a_sha)], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "origin", "main"], stderr_to_stdout: true)
+
+      assert {:conflict, files} = Rebaser.rebase_onto(repo, "feat/x", "main", fetch: false)
+      assert "shared.txt" in files
+
+      # Origin's feat/x must NOT have moved.
+      {post_sha, 0} =
+        System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/x"], stderr_to_stdout: true)
+
+      assert String.trim(post_sha) == pre_sha
+    end
+
+    test "force-push loses lease (concurrent remote update) → {:error, {:push_failed, _, _}}", %{tmp: tmp} do
+      {repo, _bare} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "from A\n")
+
+      # X branches off A.
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "-b", "feat/x"], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "x.txt", "X\n", "x adds x.txt")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "-u", "origin", "feat/x"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "main"], stderr_to_stdout: true)
+
+      # Land A on main + advance with an unrelated commit so feat/x is provably behind.
+      {a_sha, 0} = System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "cherry-pick", String.trim(a_sha)], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "main_only.txt", "advance main\n", "advance main")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "origin", "main"], stderr_to_stdout: true)
+
+      # Simulate a concurrent push from another worker via a second clone.
+      bare = Path.join(tmp, "src.git")
+      second_clone = Path.join(tmp, "second")
+      _ = GitFixture.working_clone(bare, tmp, "second")
+      {_out, 0} = System.cmd("git", ["-C", second_clone, "fetch", "origin"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", second_clone, "checkout", "feat/x"], stderr_to_stdout: true)
+      GitFixture.commit_file(second_clone, "drift.txt", "from another worker\n", "drift commit")
+      {_out, 0} = System.cmd("git", ["-C", second_clone, "push", "origin", "feat/x"], stderr_to_stdout: true)
+
+      # The first clone's view of origin/feat/x is now stale. With fetch: false,
+      # the rebaser's worktree starts from the stale ref and the force-with-lease
+      # push will be rejected because origin moved.
+      result = Rebaser.rebase_onto(repo, "feat/x", "main", fetch: false)
+
+      assert match?({:error, {:push_failed, _code, _output}}, result)
+    end
+  end
+
+  describe "scenario: feedback loop" do
+    test "non-workpad comment newer than workpad → Detector returns {:feedback, [...]}" do
+      workpad_at = ~U[2026-05-09 10:00:00Z]
+      feedback_at = ~U[2026-05-09 10:30:00Z]
+
+      workpad = %{
+        id: "c1",
+        body: "## Agent Workpad\nturn 1 done",
+        created_at: workpad_at,
+        updated_at: workpad_at,
+        user_id: "agent",
+        user_name: "agent"
+      }
+
+      feedback = %{
+        id: "c2",
+        body: "fix the regex on line 42 — empty inputs explode",
+        created_at: feedback_at,
+        updated_at: feedback_at,
+        user_id: "human",
+        user_name: "Reviewer"
+      }
+
+      issue = %Issue{
+        id: "id-X",
+        identifier: "PES-X",
+        labels: ["repo:src", "AFK"],
+        branch_name: "feat/x",
+        state: "In Review",
+        comments: [workpad, feedback]
+      }
+
+      assert {:feedback, [%{body: body}]} = Detector.evaluate(issue)
+      assert body =~ "regex on line 42"
+    end
+
+    test "no comments newer than workpad → :no_feedback" do
+      workpad_at = ~U[2026-05-09 10:00:00Z]
+      older_at = ~U[2026-05-09 09:00:00Z]
+
+      workpad = %{
+        id: "c1",
+        body: "## Agent Workpad\nturn 1 done",
+        created_at: workpad_at,
+        updated_at: workpad_at,
+        user_id: "agent",
+        user_name: "agent"
+      }
+
+      older = %{
+        id: "c0",
+        body: "kickoff",
+        created_at: older_at,
+        updated_at: older_at,
+        user_id: "human",
+        user_name: "Reviewer"
+      }
+
+      issue = %Issue{
+        id: "id-X",
+        identifier: "PES-X",
+        labels: ["repo:src", "AFK"],
+        branch_name: "feat/x",
+        state: "In Review",
+        comments: [older, workpad]
+      }
+
+      assert :no_feedback = Detector.evaluate(issue)
+    end
+  end
+
+  describe "scenario: re-dispatch after rewind" do
+    test "X went In Review → Todo; branch_name is unchanged so next dispatch reuses it", %{tmp: tmp} do
+      {repo, _} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "A\n")
+
+      a = blocker_issue("PES-A", "src", "feat/A", "id-A", "In Review")
+
+      x_first_dispatch =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          state: "Todo",
+          blocked_by: [%{id: "id-A", identifier: "PES-A", state: "In Review"}]
+        )
+
+      cfg = settings_with_paths(%{"src" => repo.path})
+
+      assert {:ok, {:single_blocker, "feat/A"}} = BaseResolver.resolve(x_first_dispatch, [a], cfg)
+
+      # Simulate a rewind: state went In Review → Todo, branch_name is identical.
+      x_after_rewind = %{x_first_dispatch | state: "Todo"}
+
+      assert {:ok, {:single_blocker, "feat/A"}} = BaseResolver.resolve(x_after_rewind, [a], cfg)
+      assert x_after_rewind.branch_name == "feat/x"
+
+      # DispatchGuard accepts (with the SHA cache populated as in real life).
+      assert :ok = DispatchGuard.evaluate(x_after_rewind, snapshot([a]), cfg)
     end
   end
 
@@ -245,6 +560,30 @@ defmodule SymphonyElixir.StackingPipelineTest do
 
       {status, 0} = System.cmd("git", ["-C", path, "status", "--porcelain"], stderr_to_stdout: true)
       assert status =~ "shared.txt"
+    end
+  end
+
+  describe "scenario: blocker branch missing on remote" do
+    test "single-blocker scenario but branch_exists? returns false → DispatchGuard skips", %{tmp: tmp} do
+      {repo, _} = make_source_repo!(tmp, "src")
+      # NOTE: We deliberately do NOT push feat/A to origin.
+
+      a_in_review_no_branch_pushed = blocker_issue("PES-A", "src", "feat/A", "id-A", "In Review")
+
+      x =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          blocked_by: [%{id: "id-A", identifier: "PES-A", state: "In Review"}]
+        )
+
+      cfg = settings_with_paths(%{"src" => repo.path})
+
+      snapshot_no_branch = %{
+        blockers_by_id: %{"id-A" => a_in_review_no_branch_pushed},
+        branch_exists?: fn _h, _b -> false end
+      }
+
+      assert {:skip, {:blocker_branch_missing, "PES-A"}} =
+               DispatchGuard.evaluate(x, snapshot_no_branch, cfg)
     end
   end
 

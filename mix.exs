@@ -43,7 +43,10 @@ defmodule SymphonyElixir.MixProject do
         "test/support/snapshot_support.exs",
         "test/support/test_support.exs",
         "test/support/git_fixture.exs",
-        "test/support/github_forge_stub.exs"
+        "test/support/github_forge_stub.exs",
+        "test/support/manifest.exs",
+        "test/support/mock_agent.exs",
+        "test/support/fake_human.exs"
       ],
       dialyzer: [
         plt_add_apps: [:mix]
