@@ -464,6 +464,34 @@ defmodule SymphonyElixir.StackingPipelineTest do
     end
   end
 
+  describe "scenario: re-dispatch after rewind" do
+    test "X went In Review → Todo; branch_name is unchanged so next dispatch reuses it", %{tmp: tmp} do
+      {repo, _} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "A\n")
+
+      a = blocker_issue("PES-A", "src", "feat/A", "id-A", "In Review")
+
+      x_first_dispatch =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          state: "Todo",
+          blocked_by: [%{id: "id-A", identifier: "PES-A", state: "In Review"}]
+        )
+
+      cfg = settings_with_paths(%{"src" => repo.path})
+
+      assert {:ok, {:single_blocker, "feat/A"}} = BaseResolver.resolve(x_first_dispatch, [a], cfg)
+
+      # Simulate a rewind: state went In Review → Todo, branch_name is identical.
+      x_after_rewind = %{x_first_dispatch | state: "Todo"}
+
+      assert {:ok, {:single_blocker, "feat/A"}} = BaseResolver.resolve(x_after_rewind, [a], cfg)
+      assert x_after_rewind.branch_name == "feat/x"
+
+      # DispatchGuard accepts (with the SHA cache populated as in real life).
+      assert :ok = DispatchGuard.evaluate(x_after_rewind, snapshot([a]), cfg)
+    end
+  end
+
   describe "scenario: cross-repo soft dep" do
     test "X in web blocked by A in api: dispatch from main, no integration branch", %{tmp: tmp} do
       {repo_web, _} = make_source_repo!(tmp, "web")
