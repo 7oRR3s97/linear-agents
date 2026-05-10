@@ -268,6 +268,38 @@ defmodule SymphonyElixir.StackingPipelineTest do
 
       assert String.trim(origin_sha) |> String.starts_with?(to_sha)
     end
+
+    test "blocker merged to main; X's branch conflicts with main on shared file → rebase aborts, origin unchanged", %{tmp: tmp} do
+      {repo, _bare} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "shared.txt", "from A\n")
+
+      # X branches off main (NOT off A) and writes the same file with conflicting content.
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "main"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "-b", "feat/x"], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "shared.txt", "from X\n", "x writes shared")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "-u", "origin", "feat/x"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "main"], stderr_to_stdout: true)
+
+      # Capture origin/feat/x's SHA before the attempt.
+      {pre_sha, 0} =
+        System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/x"], stderr_to_stdout: true)
+
+      pre_sha = String.trim(pre_sha)
+
+      # Land A's content on main (so main has shared.txt = "from A\n").
+      {a_sha, 0} = System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "cherry-pick", String.trim(a_sha)], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "origin", "main"], stderr_to_stdout: true)
+
+      assert {:conflict, files} = Rebaser.rebase_onto(repo, "feat/x", "main", fetch: false)
+      assert "shared.txt" in files
+
+      # Origin's feat/x must NOT have moved.
+      {post_sha, 0} =
+        System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/x"], stderr_to_stdout: true)
+
+      assert String.trim(post_sha) == pre_sha
+    end
   end
 
   describe "scenario: cross-repo soft dep" do
