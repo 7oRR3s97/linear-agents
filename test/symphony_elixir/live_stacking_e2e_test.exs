@@ -140,6 +140,14 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
     :ok = link_blocker!(x.id, b.id)
     :ok = link_blocker!(y.id, a.id)
 
+    # Regression guard: Linear's `inverseRelations` (what the production
+    # client polls to find blockers) must report A and B as X's blockers,
+    # and A as Y's blocker. If link_blocker!'s direction is wrong, this fails
+    # immediately — long before the dispatch logic gets a chance to behave
+    # weirdly.
+    assert_linear_blockers!(x.id, [a.identifier, b.identifier])
+    assert_linear_blockers!(y.id, [a.identifier])
+
     x = %{
       x
       | blocked_by: [
@@ -656,9 +664,37 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
   end
 
   defp link_blocker!(dependent_id, blocker_id) do
-    data = graphql!(@issue_relation_mutation, %{issueId: dependent_id, relatedIssueId: blocker_id})
+    # In Linear, `issueRelationCreate(type: blocks)` means `issueId` blocks
+    # `relatedIssueId`. We want `blocker_id` to block `dependent_id`, so the
+    # blocker is the issueId.
+    data = graphql!(@issue_relation_mutation, %{issueId: blocker_id, relatedIssueId: dependent_id})
     %{"issueRelationCreate" => %{"success" => true}} = data
     :ok
+  end
+
+  @blockers_query """
+  query StackingE2EIssueBlockers($id: String!) {
+    issue(id: $id) {
+      identifier
+      inverseRelations(first: 20) {
+        nodes { type issue { identifier } }
+      }
+    }
+  }
+  """
+
+  defp assert_linear_blockers!(dependent_id, expected_blocker_identifiers) do
+    data = graphql!(@blockers_query, %{id: dependent_id})
+    rels = get_in(data, ["issue", "inverseRelations", "nodes"]) || []
+
+    actual =
+      rels
+      |> Enum.filter(&(&1["type"] == "blocks"))
+      |> Enum.map(&get_in(&1, ["issue", "identifier"]))
+      |> Enum.sort()
+
+    assert actual == Enum.sort(expected_blocker_identifiers),
+           "Linear blocker direction wrong for #{get_in(data, ["issue", "identifier"])}: expected #{inspect(expected_blocker_identifiers)}, got #{inspect(actual)}"
   end
 
   defp completed_project_status_id! do
