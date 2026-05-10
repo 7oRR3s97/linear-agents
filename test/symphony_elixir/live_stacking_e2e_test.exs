@@ -190,39 +190,77 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
   } do
     cfg = settings(repo)
 
-    # ---- Scenario A: stacked dispatch ----
-    a_result =
-      MockAgent.dispatch!(issues.a, "main", repo,
-        in_review_state_id: state_ids.in_review,
-        manifest_path: manifest_path
-      )
+    repo_for_builder = %{
+      handle: "src",
+      path: repo.path,
+      remote: "origin",
+      default_base: "main"
+    }
 
-    assert a_result.branch == issues.a.branch_name
+    # ---- Scenario A: full stacking dispatch ----
+    # A and B are independent (no blockers) and dispatch first. Y depends on
+    # A only → stacks against A's branch. X depends on A AND B → integration
+    # branch over both. All four reach In Review.
+    MockAgent.dispatch!(issues.a, "main", repo,
+      in_review_state_id: state_ids.in_review,
+      manifest_path: manifest_path
+    )
+
+    MockAgent.dispatch!(issues.b, "main", repo,
+      in_review_state_id: state_ids.in_review,
+      manifest_path: manifest_path
+    )
 
     a_in_review = %{issues.a | state: "In Review"}
-    y_for_resolve = issues.y
+    b_in_review = %{issues.b | state: "In Review"}
 
     assert {:ok, {:single_blocker, base_for_y}} =
-             BaseResolver.resolve(y_for_resolve, [a_in_review], cfg)
+             BaseResolver.resolve(issues.y, [a_in_review], cfg)
 
     assert base_for_y == issues.a.branch_name
 
-    y_result =
-      MockAgent.dispatch!(issues.y, base_for_y, repo,
-        in_review_state_id: state_ids.in_review,
-        manifest_path: manifest_path
-      )
+    MockAgent.dispatch!(issues.y, base_for_y, repo,
+      in_review_state_id: state_ids.in_review,
+      manifest_path: manifest_path
+    )
 
-    assert y_result.branch == issues.y.branch_name
+    assert {:ok, {:integration, integration_branch}} =
+             BaseResolver.resolve(issues.x, [a_in_review, b_in_review], cfg)
 
+    # IntegrationBuilder builds the synthetic merge branch from A and B's
+    # branches — what the Reconciler does in production once 2+ blockers are
+    # In Review.
+    assert {:ok, _sha} =
+             IntegrationBuilder.rebuild(
+               repo_for_builder,
+               integration_branch,
+               [issues.a.branch_name, issues.b.branch_name]
+             )
+
+    MockAgent.dispatch!(issues.x, integration_branch, repo,
+      in_review_state_id: state_ids.in_review,
+      manifest_path: manifest_path
+    )
+
+    {:ok, a_pr} = GitHubStub.pr_for_branch(repo.gh_slug, issues.a.branch_name)
+    {:ok, b_pr} = GitHubStub.pr_for_branch(repo.gh_slug, issues.b.branch_name)
     {:ok, y_pr} = GitHubStub.pr_for_branch(repo.gh_slug, issues.y.branch_name)
-    assert y_pr.base == issues.a.branch_name
-    assert y_pr.state == "OPEN"
-
     {:ok, x_pr} = GitHubStub.pr_for_branch(repo.gh_slug, issues.x.branch_name)
-    assert x_pr == nil
 
-    # ---- Scenario B: retarget on merge ----
+    assert a_pr.base == "main"
+    assert b_pr.base == "main"
+    assert y_pr.base == issues.a.branch_name
+    assert x_pr.base == integration_branch
+
+    for pr <- [a_pr, b_pr, y_pr, x_pr], do: assert(pr.state == "OPEN")
+
+    # Confirm Linear sees all four In Review.
+    for issue <- [issues.a, issues.b, issues.y, issues.x] do
+      assert issue_state_type!(issue.id) == "started",
+             "expected #{issue.identifier} in a started state after dispatch"
+    end
+
+    # ---- Scenario B: A merges → Y retargets to main, X retargets to B ----
     FakeHuman.merge!(issues.a, repo,
       terminal_state_id: state_ids.done,
       manifest_path: manifest_path
@@ -236,41 +274,121 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
         blocked_by: [%{id: issues.a.id, identifier: issues.a.identifier, state: "Done"}]
     }
 
+    x_in_review = %{
+      issues.x
+      | state: "In Review",
+        blocked_by: [
+          %{id: issues.a.id, identifier: issues.a.identifier, state: "Done"},
+          %{id: issues.b.id, identifier: issues.b.identifier, state: "In Review"}
+        ]
+    }
+
     {:ok, _events} =
-      Reconciler.run([y_in_review], [a_done], cfg, forge_repos: %{"src" => repo.gh_slug})
+      Reconciler.run([y_in_review, x_in_review], [a_done, b_in_review], cfg,
+        forge_repos: %{"src" => repo.gh_slug}
+      )
 
     retarget_calls = GitHubStub.calls(:retarget_pr)
-    assert Enum.any?(retarget_calls, &match?({:retarget_pr, {_, _, "main"}}, &1))
 
-    # ---- Scenario C: cascade rewind ----
+    assert Enum.any?(retarget_calls, fn
+             {:retarget_pr, {_, n, "main"}} -> n == y_pr.number
+             _ -> false
+           end),
+           "expected Y to retarget to main; got: #{inspect(retarget_calls)}"
+
+    assert Enum.any?(retarget_calls, fn
+             {:retarget_pr, {_, n, base}} -> n == x_pr.number and base == issues.b.branch_name
+             _ -> false
+           end),
+           "expected X to retarget to feat/B; got: #{inspect(retarget_calls)}"
+
+    # ---- Scenario C: B merges → X final retarget to main ----
+    FakeHuman.merge!(issues.b, repo,
+      terminal_state_id: state_ids.done,
+      manifest_path: manifest_path
+    )
+
+    b_done = %{issues.b | state: "Done"}
+
+    x_in_review_after_b = %{
+      x_in_review
+      | blocked_by: [
+          %{id: issues.a.id, identifier: issues.a.identifier, state: "Done"},
+          %{id: issues.b.id, identifier: issues.b.identifier, state: "Done"}
+        ]
+    }
+
+    # Refresh stub PR base so PR.Router sees X currently on feat/B (per
+    # scenario B's retarget).
+    GitHubStub.set_pr({repo.gh_slug, issues.x.branch_name}, %{x_pr | base: issues.b.branch_name})
+
+    {:ok, _events} =
+      Reconciler.run([x_in_review_after_b], [a_done, b_done], cfg,
+        forge_repos: %{"src" => repo.gh_slug}
+      )
+
+    final_retargets = GitHubStub.calls(:retarget_pr)
+
+    assert Enum.count(final_retargets, fn
+             {:retarget_pr, {_, n, "main"}} -> n == x_pr.number
+             _ -> false
+           end) >= 1,
+           "expected X to be retargeted to main after B merged; got: #{inspect(final_retargets)}"
+
+    # ---- Scenario D: cascade rewind ----
+    # A returns to Todo (a reviewer un-merged or rewound it). Both Y and X
+    # depend on A and are currently In Review → both should cascade.
     FakeHuman.rewind!(issues.a, state_ids.todo, manifest_path: manifest_path)
-
     a_rewound = %{issues.a | state: "Todo"}
 
-    y_in_review_after_rewind = %{
+    y_with_a_rewound = %{
       y_in_review
       | blocked_by: [%{id: issues.a.id, identifier: issues.a.identifier, state: "Todo"}]
     }
 
-    # Tick 1: prime previous-state cache (A was Done before).
-    {:ok, _} = Reconciler.run([y_in_review], [a_done], cfg)
+    x_with_a_rewound = %{
+      x_in_review_after_b
+      | blocked_by: [
+          %{id: issues.a.id, identifier: issues.a.identifier, state: "Todo"},
+          %{id: issues.b.id, identifier: issues.b.identifier, state: "Done"}
+        ]
+    }
 
-    # Tick 2: A is now Todo → cascade event for Y.
-    {:ok, e2} = Reconciler.run([y_in_review_after_rewind], [a_rewound], cfg)
-    assert {:cascade_pending, _y_id, _a_id} = Enum.find(e2, &match?({:cascade_pending, _, _}, &1))
+    # Tick 1 primes previous-state cache (A was Done before the rewind).
+    {:ok, _} = Reconciler.run([y_in_review, x_in_review_after_b], [a_done, b_done], cfg)
+
+    # Tick 2: A → Todo → cascade events for both Y and X.
+    {:ok, e2} =
+      Reconciler.run([y_with_a_rewound, x_with_a_rewound], [a_rewound, b_done], cfg)
+
+    cascade_events = Enum.filter(e2, &match?({:cascade_pending, _, _}, &1))
+
+    assert length(cascade_events) >= 2,
+           "expected cascade events for both Y and X; got: #{inspect(cascade_events)}"
 
     cascades = Reconciler.drain_cascades()
 
-    issues_by_id = %{issues.y.id => y_in_review_after_rewind, issues.a.id => a_rewound}
+    issues_by_id = %{
+      issues.y.id => y_with_a_rewound,
+      issues.x.id => x_with_a_rewound,
+      issues.a.id => a_rewound,
+      issues.b.id => b_done
+    }
 
     parent = self()
 
     apply_fn = fn identifier, _new_state ->
-      send(parent, {:linear_state, identifier, "Todo"})
+      issue =
+        cond do
+          identifier == issues.y.identifier -> issues.y
+          identifier == issues.x.identifier -> issues.x
+          true -> nil
+        end
 
-      issue = if identifier == issues.y.identifier, do: issues.y, else: nil
-
-      if issue, do: FakeHuman.rewind!(issue, state_ids.todo, manifest_path: manifest_path)
+      if issue do
+        FakeHuman.rewind!(issue, state_ids.todo, manifest_path: manifest_path)
+        send(parent, {:rewound, identifier})
+      end
 
       :ok
     end
@@ -279,25 +397,24 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
     lookup = fn id -> Map.fetch(issues_by_id, id) end
 
     decisions = Cascade.apply_cascades(cascades, lookup, apply_fn, comment_fn)
-    assert Enum.any?(decisions, &match?({:rewind, _, _}, &1))
+    rewinds = Enum.filter(decisions, &match?({:rewind, _, _}, &1))
 
-    assert_receive {:linear_state, _, "Todo"}, 5_000
+    assert length(rewinds) >= 2,
+           "expected both Y and X to rewind; got: #{inspect(decisions)}"
 
-    # Verify Linear actually has Y in an unstarted state now.
+    assert_receive {:rewound, _}, 5_000
+    assert_receive {:rewound, _}, 5_000
+
     assert issue_state_type!(issues.y.id) == "unstarted"
+    assert issue_state_type!(issues.x.id) == "unstarted"
 
-    # ---- Scenario D: feedback loop ----
-    FakeHuman.rewind!(issues.a, state_ids.in_review, manifest_path: manifest_path)
-    FakeHuman.merge!(issues.a, repo,
-      terminal_state_id: state_ids.done,
+    # ---- Scenario E: feedback loop ----
+    # Re-dispatch Y on main (A is Todo, but the detector test only needs Y to
+    # have a workpad; we set base=main to bypass blocker logic for this slice).
+    MockAgent.dispatch!(issues.y, "main", repo,
+      in_review_state_id: state_ids.in_review,
       manifest_path: manifest_path
     )
-
-    _y_redispatch =
-      MockAgent.dispatch!(issues.y, "main", repo,
-        in_review_state_id: state_ids.in_review,
-        manifest_path: manifest_path
-      )
 
     FakeHuman.request_changes!(issues.y, "fix the regex on line 42 — empty inputs explode",
       manifest_path: manifest_path
@@ -337,8 +454,26 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
     FakeHuman.rewind!(issues.y, state_ids.todo, manifest_path: manifest_path)
     assert issue_state_type!(issues.y.id) == "unstarted"
 
-    # ---- Scenario E: conflict integration ----
+    # ---- Scenario F: conflict integration ----
+    # Re-dispatch A and B with content that touches the same file. The
+    # IntegrationBuilder must report :conflict and ConflictFallback must
+    # produce an in-tree merge worktree where the agent would resolve.
+    #
+    # X's branch was created locally in scenario A; ConflictFallback's
+    # `git worktree add -b feat/stacking-x` would fail if that branch still
+    # exists. Drop it from the source clone first.
+    {_out, _code} =
+      System.cmd("git", ["-C", repo.path, "branch", "-D", issues.x.branch_name],
+        stderr_to_stdout: true
+      )
+
+    {_out, _code} =
+      System.cmd("git", ["-C", repo.path, "push", "origin", "--delete", issues.x.branch_name],
+        stderr_to_stdout: true
+      )
+
     FakeHuman.rewind!(issues.a, state_ids.todo, manifest_path: manifest_path)
+    FakeHuman.rewind!(issues.b, state_ids.todo, manifest_path: manifest_path)
 
     MockAgent.dispatch!(issues.a, "main", repo,
       in_review_state_id: state_ids.in_review,
@@ -354,10 +489,10 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
       manifest_path: manifest_path
     )
 
-    a_in_review_e = %{issues.a | state: "In Review"}
-    b_in_review_e = %{issues.b | state: "In Review"}
+    a_conflict_in_review = %{issues.a | state: "In Review"}
+    b_conflict_in_review = %{issues.b | state: "In Review"}
 
-    x_for_resolve = %{
+    x_for_conflict = %{
       issues.x
       | blocked_by: [
           %{id: issues.a.id, identifier: issues.a.identifier, state: "In Review"},
@@ -365,23 +500,16 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
         ]
     }
 
-    integration_branch =
+    conflict_integration_branch =
       "symphony/integration/" <> String.downcase(issues.x.identifier)
 
-    assert {:ok, {:integration, ^integration_branch}} =
-             BaseResolver.resolve(x_for_resolve, [a_in_review_e, b_in_review_e], cfg)
-
-    repo_for_builder = %{
-      handle: "src",
-      path: repo.path,
-      remote: "origin",
-      default_base: "main"
-    }
+    assert {:ok, {:integration, ^conflict_integration_branch}} =
+             BaseResolver.resolve(x_for_conflict, [a_conflict_in_review, b_conflict_in_review], cfg)
 
     assert {:conflict, files} =
              IntegrationBuilder.rebuild(
                repo_for_builder,
-               integration_branch,
+               conflict_integration_branch,
                [issues.a.branch_name, issues.b.branch_name]
              )
 
@@ -408,7 +536,9 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
                fetch: true
              )
 
-    {status, 0} = System.cmd("git", ["-C", prepared_path, "status", "--porcelain"], stderr_to_stdout: true)
+    {status, 0} =
+      System.cmd("git", ["-C", prepared_path, "status", "--porcelain"], stderr_to_stdout: true)
+
     assert status =~ "shared.txt"
 
     E2EManifest.append!(manifest_path, %{
@@ -417,6 +547,13 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
       worktree: prepared_path,
       conflict_files: files
     })
+
+    # ---- Tidy up: move every issue to a terminal state so the operator's
+    # Linear workspace doesn't accumulate residue. The project itself is
+    # completed in on_exit, but issues stay attached.
+    for issue <- [issues.a, issues.b, issues.x, issues.y] do
+      FakeHuman.rewind!(issue, state_ids.done, manifest_path: manifest_path)
+    end
 
     # ---- Final manifest sanity ----
     records = E2EManifest.read!(manifest_path)
