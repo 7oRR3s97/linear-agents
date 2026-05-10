@@ -19,7 +19,8 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
   # Aliases below are commented out in this skeleton (Task 2.4) to keep
   # `--warnings-as-errors` clean. Subsequent tasks (2.5+) re-enable them as
   # the scenarios that use each module land.
-  # alias SymphonyElixir.Branches.{BaseResolver, ConflictFallback, IntegrationBuilder, Reconciler}
+  alias SymphonyElixir.Branches.BaseResolver
+  # alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder, Reconciler}
   # alias SymphonyElixir.Deps.Cascade
   alias SymphonyElixir.E2EManifest
   # alias SymphonyElixir.FakeHuman
@@ -27,7 +28,7 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
   alias SymphonyElixir.GitFixture
   alias SymphonyElixir.Linear.Client
   alias SymphonyElixir.Linear.Issue
-  # alias SymphonyElixir.MockAgent
+  alias SymphonyElixir.MockAgent
 
   @moduletag :live_stacking_e2e
   @moduletag :tmp_dir
@@ -185,18 +186,65 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
     manifest_path: manifest_path,
     repo: repo,
     issues: issues,
-    state_ids: _state_ids
+    state_ids: state_ids
   } do
-    assert File.exists?(manifest_path)
-    assert File.exists?(repo.path)
+    cfg = settings(repo)
 
-    for {key, issue} <- issues do
-      assert is_binary(issue.id), "expected #{key} to have a Linear id"
-      assert issue.identifier =~ ~r/[A-Z]+-\d+/
-    end
+    # ---- Scenario A: stacked dispatch ----
+    a_result =
+      MockAgent.dispatch!(issues.a, "main", repo,
+        in_review_state_id: state_ids.in_review,
+        manifest_path: manifest_path
+      )
 
-    [setup_event | _] = E2EManifest.read!(manifest_path)
-    assert setup_event["event"] == "setup"
+    assert a_result.branch == issues.a.branch_name
+
+    a_in_review = %{issues.a | state: "In Review"}
+    y_for_resolve = issues.y
+
+    assert {:ok, {:single_blocker, base_for_y}} =
+             BaseResolver.resolve(y_for_resolve, [a_in_review], cfg)
+
+    assert base_for_y == issues.a.branch_name
+
+    y_result =
+      MockAgent.dispatch!(issues.y, base_for_y, repo,
+        in_review_state_id: state_ids.in_review,
+        manifest_path: manifest_path
+      )
+
+    assert y_result.branch == issues.y.branch_name
+
+    {:ok, y_pr} = GitHubStub.pr_for_branch(repo.gh_slug, issues.y.branch_name)
+    assert y_pr.base == issues.a.branch_name
+    assert y_pr.state == "OPEN"
+
+    {:ok, x_pr} = GitHubStub.pr_for_branch(repo.gh_slug, issues.x.branch_name)
+    assert x_pr == nil
+  end
+
+  defp settings(repo) do
+    %{
+      stacking: %{
+        enabled: true,
+        unblock_states: ["In Review", "Done"],
+        integration_branch_template: "symphony/integration/{{ issue.identifier | downcase }}",
+        rework_state: "Todo"
+      },
+      agent_autonomy: %{
+        label_dispatchable: "AFK",
+        label_human_only: "HITL",
+        default_when_missing: "HITL"
+      },
+      tracker: %{active_states: ["Todo", "In Progress", "In Review"], terminal_states: ["Done"]},
+      repositories: %{
+        default: "src",
+        by_label: %{"repo:src" => "src"},
+        paths: %{"src" => repo.path},
+        remote: "origin",
+        default_base_branch: "main"
+      }
+    }
   end
 
   defp graphql!(query, vars \\ %{}) do
