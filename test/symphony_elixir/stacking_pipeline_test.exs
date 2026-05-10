@@ -555,6 +555,30 @@ defmodule SymphonyElixir.StackingPipelineTest do
     end
   end
 
+  describe "scenario: blocker branch missing on remote" do
+    test "single-blocker scenario but branch_exists? returns false → DispatchGuard skips", %{tmp: tmp} do
+      {repo, _} = make_source_repo!(tmp, "src")
+      # NOTE: We deliberately do NOT push feat/A to origin.
+
+      a_in_review_no_branch_pushed = blocker_issue("PES-A", "src", "feat/A", "id-A", "In Review")
+
+      x =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          blocked_by: [%{id: "id-A", identifier: "PES-A", state: "In Review"}]
+        )
+
+      cfg = settings_with_paths(%{"src" => repo.path})
+
+      snapshot_no_branch = %{
+        blockers_by_id: %{"id-A" => a_in_review_no_branch_pushed},
+        branch_exists?: fn _h, _b -> false end
+      }
+
+      assert {:skip, {:blocker_branch_missing, "PES-A"}} =
+               DispatchGuard.evaluate(x, snapshot_no_branch, cfg)
+    end
+  end
+
   defp make_source_repo!(tmp, name) do
     bare = GitFixture.bare_repo(tmp, "#{name}.git")
     source = GitFixture.working_clone(bare, tmp, name)
