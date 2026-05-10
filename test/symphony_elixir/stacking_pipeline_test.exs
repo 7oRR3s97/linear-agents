@@ -136,6 +136,56 @@ defmodule SymphonyElixir.StackingPipelineTest do
       {_out, 0} =
         System.cmd("git", ["-C", bare, "rev-parse", "symphony/integration/pes-x"], stderr_to_stdout: true)
     end
+
+    test "three blockers → integration; one merges → still integration over two; second merges → single_blocker", %{tmp: tmp} do
+      {repo, bare} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "A\n")
+      push_branch(repo.path, "feat/B", "b.txt", "B\n")
+      push_branch(repo.path, "feat/C", "c.txt", "C\n")
+
+      a_in_review = blocker_issue("PES-A", "src", "feat/A", "id-A", "In Review")
+      b_in_review = blocker_issue("PES-B", "src", "feat/B", "id-B", "In Review")
+      c_in_review = blocker_issue("PES-C", "src", "feat/C", "id-C", "In Review")
+
+      x =
+        issue("PES-X", ["repo:src", "AFK"], "feat/x",
+          blocked_by: [
+            %{id: "id-A", identifier: "PES-A", state: "In Review"},
+            %{id: "id-B", identifier: "PES-B", state: "In Review"},
+            %{id: "id-C", identifier: "PES-C", state: "In Review"}
+          ]
+        )
+
+      cfg = settings_with_paths(%{"src" => repo.path})
+
+      # All three In Review → integration over [A, B, C].
+      assert {:ok, {:integration, "symphony/integration/pes-x"}} =
+               BaseResolver.resolve(x, [a_in_review, b_in_review, c_in_review], cfg)
+
+      assert {:ok, _sha} =
+               IntegrationBuilder.rebuild(repo, "symphony/integration/pes-x", ["feat/A", "feat/B", "feat/C"])
+
+      {_out, 0} =
+        System.cmd("git", ["-C", bare, "rev-parse", "symphony/integration/pes-x"], stderr_to_stdout: true)
+
+      # B reaches Done → still integration, but only over A and C.
+      b_done = %{b_in_review | state: "Done"}
+
+      active_after_b = Enum.reject([a_in_review, b_done, c_in_review], &(&1.state == "Done"))
+
+      assert {:ok, {:integration, "symphony/integration/pes-x"}} =
+               BaseResolver.resolve(x, active_after_b, cfg)
+
+      assert {:ok, _sha} =
+               IntegrationBuilder.rebuild(repo, "symphony/integration/pes-x", ["feat/A", "feat/C"])
+
+      # C reaches Done → single_blocker over A.
+      c_done = %{c_in_review | state: "Done"}
+      active_after_c = Enum.reject([a_in_review, b_done, c_done], &(&1.state == "Done"))
+
+      assert {:ok, {:single_blocker, "feat/A"}} =
+               BaseResolver.resolve(x, active_after_c, cfg)
+    end
   end
 
   describe "scenario: cascade rework" do
