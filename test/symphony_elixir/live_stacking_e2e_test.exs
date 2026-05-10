@@ -419,6 +419,23 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
       worktree: prepared_path,
       conflict_files: files
     })
+
+    # ---- Final manifest sanity ----
+    records = E2EManifest.read!(manifest_path)
+    events = Enum.map(records, & &1["event"])
+
+    for required <- [
+          "setup",
+          "agent_dispatch",
+          "human_merge",
+          "human_rewind",
+          "human_request_changes",
+          "conflict_fallback_prepared"
+        ] do
+      assert required in events, "manifest missing #{required}"
+    end
+
+    Logger.info("manifest path: #{manifest_path}")
   end
 
   defp settings(repo) do
