@@ -20,10 +20,11 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
   # `--warnings-as-errors` clean. Subsequent tasks (2.5+) re-enable them as
   # the scenarios that use each module land.
   alias SymphonyElixir.Branches.BaseResolver
-  # alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder, Reconciler}
+  alias SymphonyElixir.Branches.Reconciler
+  # alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder}
   # alias SymphonyElixir.Deps.Cascade
   alias SymphonyElixir.E2EManifest
-  # alias SymphonyElixir.FakeHuman
+  alias SymphonyElixir.FakeHuman
   alias SymphonyElixir.Forge.GitHubStub
   alias SymphonyElixir.GitFixture
   alias SymphonyElixir.Linear.Client
@@ -221,6 +222,26 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
 
     {:ok, x_pr} = GitHubStub.pr_for_branch(repo.gh_slug, issues.x.branch_name)
     assert x_pr == nil
+
+    # ---- Scenario B: retarget on merge ----
+    FakeHuman.merge!(issues.a, repo,
+      terminal_state_id: state_ids.done,
+      manifest_path: manifest_path
+    )
+
+    a_done = %{issues.a | state: "Done"}
+
+    y_in_review = %{
+      issues.y
+      | state: "In Review",
+        blocked_by: [%{id: issues.a.id, identifier: issues.a.identifier, state: "Done"}]
+    }
+
+    {:ok, _events} =
+      Reconciler.run([y_in_review], [a_done], cfg, forge_repos: %{"src" => repo.gh_slug})
+
+    retarget_calls = GitHubStub.calls(:retarget_pr)
+    assert Enum.any?(retarget_calls, &match?({:retarget_pr, {_, _, "main"}}, &1))
   end
 
   defp settings(repo) do
