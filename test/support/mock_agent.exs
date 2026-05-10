@@ -53,7 +53,11 @@ defmodule SymphonyElixir.MockAgent do
     {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "-B", branch], stderr_to_stdout: true)
 
     head_sha = GitFixture.commit_file(repo.path, file, content, "agent #{issue.identifier} writes #{file}")
-    {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "-u", "origin", branch], stderr_to_stdout: true)
+    # Force-push mirrors real-agent behavior on redispatch: a rewound issue
+    # rebuilds its branch from scratch and overwrites origin.
+    {_out, 0} =
+      System.cmd("git", ["-C", repo.path, "push", "--force", "-u", "origin", branch], stderr_to_stdout: true)
+
     {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "main"], stderr_to_stdout: true)
 
     # 3: stub PR.
