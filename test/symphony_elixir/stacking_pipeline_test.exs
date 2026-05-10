@@ -234,6 +234,62 @@ defmodule SymphonyElixir.StackingPipelineTest do
       assert_received {:linear_comment, "PES-X", comment}
       assert comment =~ "PES-A returned to `Todo`"
     end
+
+    test "A → B → C all In Review; A rewinds; ticks cascade B then C", %{tmp: tmp} do
+      {repo, _} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "A\n")
+      push_branch(repo.path, "feat/B", "b.txt", "B\n")
+      push_branch(repo.path, "feat/C", "c.txt", "C\n")
+
+      a_in_review = blocker_issue("PES-A", "src", "feat/A", "id-A", "In Review")
+      a_rewound = %{a_in_review | state: "Todo"}
+
+      b_in_review =
+        issue("PES-B", ["repo:src", "AFK"], "feat/B",
+          state: "In Review",
+          blocked_by: [%{id: "id-A", identifier: "PES-A", state: "In Review"}]
+        )
+
+      b_rewound = %{b_in_review | state: "Todo"}
+
+      c_in_review =
+        issue("PES-C", ["repo:src", "AFK"], "feat/C",
+          state: "In Review",
+          blocked_by: [%{id: "id-PES-B", identifier: "PES-B", state: "In Review"}]
+        )
+
+      cfg = settings_with_paths(%{"src" => repo.path})
+
+      # Tick 1: prime previous-state cache with everything In Review.
+      {:ok, _} = Reconciler.run([b_in_review, c_in_review], [a_in_review, b_in_review], cfg)
+
+      # Tick 2: A rewinds → cascade event for B.
+      {:ok, e2} = Reconciler.run([b_in_review, c_in_review], [a_rewound, b_in_review], cfg)
+      assert {:cascade_pending, "id-PES-B", "id-A"} in e2
+
+      # Apply cascade: B rewinds.
+      events = Reconciler.drain_cascades()
+      issues_by_id = %{"id-PES-B" => b_in_review, "id-A" => a_rewound}
+
+      lookup = fn id -> Map.fetch(issues_by_id, id) end
+      parent = self()
+      apply_fn = fn ident, state -> send(parent, {:linear_state, ident, state}); :ok end
+      comment_fn = fn ident, body -> send(parent, {:linear_comment, ident, body}); :ok end
+
+      assert [{:rewind, "PES-B", _}] = Cascade.apply_cascades(events, lookup, apply_fn, comment_fn)
+      assert_received {:linear_state, "PES-B", "Todo"}
+
+      # Tick 3: B is now Todo → cascade event for C.
+      {:ok, e3} = Reconciler.run([c_in_review], [a_rewound, b_rewound], cfg)
+      assert {:cascade_pending, "id-PES-C", "id-PES-B"} in e3
+
+      events_3 = Reconciler.drain_cascades()
+      issues_by_id_3 = %{"id-PES-C" => c_in_review, "id-PES-B" => b_rewound}
+      lookup_3 = fn id -> Map.fetch(issues_by_id_3, id) end
+
+      assert [{:rewind, "PES-C", _}] = Cascade.apply_cascades(events_3, lookup_3, apply_fn, comment_fn)
+      assert_received {:linear_state, "PES-C", "Todo"}
+    end
   end
 
   describe "scenario: post-deploy mediation" do
