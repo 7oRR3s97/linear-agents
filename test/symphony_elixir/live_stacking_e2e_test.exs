@@ -21,7 +21,7 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
   # the scenarios that use each module land.
   alias SymphonyElixir.Branches.BaseResolver
   alias SymphonyElixir.Branches.Reconciler
-  # alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder}
+  alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder}
   alias SymphonyElixir.Deps.Cascade
   alias SymphonyElixir.E2EManifest
   alias SymphonyElixir.FakeHuman
@@ -338,6 +338,87 @@ defmodule SymphonyElixir.LiveStackingE2ETest do
 
     FakeHuman.rewind!(issues.y, state_ids.todo, manifest_path: manifest_path)
     assert issue_state_type!(issues.y.id) == "unstarted"
+
+    # ---- Scenario E: conflict integration ----
+    FakeHuman.rewind!(issues.a, state_ids.todo, manifest_path: manifest_path)
+
+    MockAgent.dispatch!(issues.a, "main", repo,
+      in_review_state_id: state_ids.in_review,
+      file: "shared.txt",
+      content: "from A\n",
+      manifest_path: manifest_path
+    )
+
+    MockAgent.dispatch!(issues.b, "main", repo,
+      in_review_state_id: state_ids.in_review,
+      file: "shared.txt",
+      content: "from B\n",
+      manifest_path: manifest_path
+    )
+
+    a_in_review_e = %{issues.a | state: "In Review"}
+    b_in_review_e = %{issues.b | state: "In Review"}
+
+    x_for_resolve = %{
+      issues.x
+      | blocked_by: [
+          %{id: issues.a.id, identifier: issues.a.identifier, state: "In Review"},
+          %{id: issues.b.id, identifier: issues.b.identifier, state: "In Review"}
+        ]
+    }
+
+    integration_branch =
+      "symphony/integration/" <> String.downcase(issues.x.identifier)
+
+    assert {:ok, {:integration, ^integration_branch}} =
+             BaseResolver.resolve(x_for_resolve, [a_in_review_e, b_in_review_e], cfg)
+
+    repo_for_builder = %{
+      handle: "src",
+      path: repo.path,
+      remote: "origin",
+      default_base: "main"
+    }
+
+    assert {:conflict, files} =
+             IntegrationBuilder.rebuild(
+               repo_for_builder,
+               integration_branch,
+               [issues.a.branch_name, issues.b.branch_name]
+             )
+
+    assert "shared.txt" in files
+
+    ctx = %{
+      files: files,
+      blocker_branches: [issues.a.branch_name, issues.b.branch_name],
+      blocker_shas: %{}
+    }
+
+    assert :new = ConflictFallback.mark_conflict(issues.x.id, ctx)
+
+    ws = Path.join(Path.dirname(repo.path), "ws-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(ws)
+
+    assert {:ok, %{path: prepared_path}} =
+             ConflictFallback.prepare_worktree(
+               repo_for_builder,
+               issues.x.identifier,
+               issues.x.branch_name,
+               [issues.a.branch_name, issues.b.branch_name],
+               workspace_root: ws,
+               fetch: true
+             )
+
+    {status, 0} = System.cmd("git", ["-C", prepared_path, "status", "--porcelain"], stderr_to_stdout: true)
+    assert status =~ "shared.txt"
+
+    E2EManifest.append!(manifest_path, %{
+      event: "conflict_fallback_prepared",
+      issue: issues.x.identifier,
+      worktree: prepared_path,
+      conflict_files: files
+    })
   end
 
   defp settings(repo) do
