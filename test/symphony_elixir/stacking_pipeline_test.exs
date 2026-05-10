@@ -16,7 +16,7 @@ defmodule SymphonyElixir.StackingPipelineTest do
 
   use ExUnit.Case, async: false
 
-  alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder, Reconciler}
+  alias SymphonyElixir.Branches.{ConflictFallback, IntegrationBuilder, Rebaser, Reconciler}
   alias SymphonyElixir.Branches.BaseResolver
   alias SymphonyElixir.Deps.{Cascade, DispatchGuard}
   alias SymphonyElixir.Forge.GitHubStub
@@ -232,6 +232,41 @@ defmodule SymphonyElixir.StackingPipelineTest do
       assert_received {:linear_state, "PES-X", "Todo"}
       assert_received {:linear_comment, "PES-X", comment}
       assert comment =~ "PES-A returned to `Todo`"
+    end
+  end
+
+  describe "scenario: post-deploy mediation" do
+    test "blocker reaches Done; dependent branch rebases onto main, force-push fires once", %{tmp: tmp} do
+      {repo, _bare} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "from A\n")
+
+      # Branch feat/x off feat/A so X carries A's commits.
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "-b", "feat/x"], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "x.txt", "X content\n", "x adds x.txt")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "-u", "origin", "feat/x"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "main"], stderr_to_stdout: true)
+
+      # Land A on main via cherry-pick + add an unrelated commit so feat/x is
+      # provably behind. Without the second commit, the rebase can collapse to
+      # a no-op via patch-id matching depending on test ordering.
+      {a_sha, 0} = System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "cherry-pick", String.trim(a_sha)], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "main_only.txt", "advance main\n", "advance main")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "origin", "main"], stderr_to_stdout: true)
+
+      assert {:ok, %{from: from_sha, to: to_sha}} =
+               Rebaser.rebase_onto(repo, "feat/x", "main", fetch: false)
+
+      assert byte_size(from_sha) >= 7
+      assert byte_size(to_sha) >= 7
+      assert from_sha != to_sha
+
+      # Confirm origin's feat/x now points at the rebased SHA.
+      {origin_sha, 0} =
+        System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/x"], stderr_to_stdout: true)
+
+      assert String.trim(origin_sha) |> String.starts_with?(to_sha)
     end
   end
 
