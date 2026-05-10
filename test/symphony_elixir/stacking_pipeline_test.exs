@@ -273,8 +273,16 @@ defmodule SymphonyElixir.StackingPipelineTest do
 
       lookup = fn id -> Map.fetch(issues_by_id, id) end
       parent = self()
-      apply_fn = fn ident, state -> send(parent, {:linear_state, ident, state}); :ok end
-      comment_fn = fn ident, body -> send(parent, {:linear_comment, ident, body}); :ok end
+
+      apply_fn = fn ident, state ->
+        send(parent, {:linear_state, ident, state})
+        :ok
+      end
+
+      comment_fn = fn ident, body ->
+        send(parent, {:linear_comment, ident, body})
+        :ok
+      end
 
       assert [{:rewind, "PES-B", _}] = Cascade.apply_cascades(events, lookup, apply_fn, comment_fn)
       assert_received {:linear_state, "PES-B", "Todo"}
