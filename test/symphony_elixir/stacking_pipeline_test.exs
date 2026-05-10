@@ -300,6 +300,40 @@ defmodule SymphonyElixir.StackingPipelineTest do
 
       assert String.trim(post_sha) == pre_sha
     end
+
+    test "force-push loses lease (concurrent remote update) → {:error, {:push_failed, _, _}}", %{tmp: tmp} do
+      {repo, _bare} = make_source_repo!(tmp, "src")
+      push_branch(repo.path, "feat/A", "a.txt", "from A\n")
+
+      # X branches off A.
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "-b", "feat/x"], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "x.txt", "X\n", "x adds x.txt")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "-u", "origin", "feat/x"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "checkout", "main"], stderr_to_stdout: true)
+
+      # Land A on main + advance with an unrelated commit so feat/x is provably behind.
+      {a_sha, 0} = System.cmd("git", ["-C", repo.path, "rev-parse", "origin/feat/A"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "cherry-pick", String.trim(a_sha)], stderr_to_stdout: true)
+      GitFixture.commit_file(repo.path, "main_only.txt", "advance main\n", "advance main")
+      {_out, 0} = System.cmd("git", ["-C", repo.path, "push", "origin", "main"], stderr_to_stdout: true)
+
+      # Simulate a concurrent push from another worker via a second clone.
+      bare = Path.join(tmp, "src.git")
+      second_clone = Path.join(tmp, "second")
+      _ = GitFixture.working_clone(bare, tmp, "second")
+      {_out, 0} = System.cmd("git", ["-C", second_clone, "fetch", "origin"], stderr_to_stdout: true)
+      {_out, 0} = System.cmd("git", ["-C", second_clone, "checkout", "feat/x"], stderr_to_stdout: true)
+      GitFixture.commit_file(second_clone, "drift.txt", "from another worker\n", "drift commit")
+      {_out, 0} = System.cmd("git", ["-C", second_clone, "push", "origin", "feat/x"], stderr_to_stdout: true)
+
+      # The first clone's view of origin/feat/x is now stale. With fetch: false,
+      # the rebaser's worktree starts from the stale ref and the force-with-lease
+      # push will be rejected because origin moved.
+      result = Rebaser.rebase_onto(repo, "feat/x", "main", fetch: false)
+
+      assert match?({:error, {:push_failed, _code, _output}}, result)
+    end
   end
 
   describe "scenario: cross-repo soft dep" do
